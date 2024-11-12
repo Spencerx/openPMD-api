@@ -20,9 +20,13 @@
  */
 #include "openPMD/Mesh.hpp"
 #include "openPMD/Error.hpp"
+#include "openPMD/IO/AbstractIOHandler.hpp"
 #include "openPMD/Series.hpp"
+#include "openPMD/ThrowError.hpp"
+#include "openPMD/UnitDimension.hpp"
 #include "openPMD/auxiliary/DerefDynamicCast.hpp"
 #include "openPMD/auxiliary/StringManip.hpp"
+#include "openPMD/backend/Attribute.hpp"
 #include "openPMD/backend/Writable.hpp"
 
 #include <algorithm>
@@ -40,7 +44,6 @@ Mesh::Mesh()
     setAxisLabels({"x"}); // empty strings are not allowed in HDF5
     setGridSpacing(std::vector<double>{1});
     setGridGlobalOffset({0});
-    setGridUnitSI(1);
 }
 
 Mesh::Geometry Mesh::geometry() const
@@ -181,20 +184,166 @@ double Mesh::gridUnitSI() const
 
 Mesh &Mesh::setGridUnitSI(double gusi)
 {
+    if (auto standard = IOHandler()->m_standard;
+        standard >= OpenpmdStandard::v_2_0_0)
+    {
+        std::cerr << "[Mesh::setGridUnitSI] Warning: Setting a scalar "
+                     "`gridUnitSI` in a file with openPMD version '" +
+                std::string(auxiliary::formatStandard(standard)) +
+                "'. Consider specifying a vector instead in order to "
+                "specify the gridUnitSI per axis (ref.: "
+                "https://github.com/openPMD/openPMD-standard/pull/193).\n";
+    }
     setAttribute("gridUnitSI", gusi);
     return *this;
 }
 
-Mesh &Mesh::setUnitDimension(std::map<UnitDimension, double> const &udim)
+Mesh &Mesh::setGridUnitSI(std::vector<double> const &gusi)
+{
+    return setGridUnitSIPerDimension(gusi);
+}
+
+namespace
+{
+    uint64_t retrieveMeshDimensionality(Mesh const &m)
+    {
+        if (m.containsAttribute("axisLabels"))
+        {
+            return m.axisLabels().size();
+        }
+
+        // maybe we have record components and can ask them
+        if (auto it = m.begin(); it != m.end())
+        {
+            return it->second.getDimensionality();
+        }
+        /*
+         * Since some backends cannot distinguish between vector and
+         * scalar values, the most likely answer here is 1.
+         */
+        return 1;
+    }
+} // namespace
+
+std::vector<double> Mesh::gridUnitSIPerDimension() const
+{
+    if (containsAttribute("gridUnitSI"))
+    {
+        if (IOHandler()->m_standard < OpenpmdStandard::v_2_0_0)
+        {
+            // If the openPMD version is lower than 2.0, the gridUnitSI is a
+            // scalar interpreted for all axes. Copy it d times.
+            return std::vector<double>(
+                retrieveMeshDimensionality(*this),
+                getAttribute("gridUnitSI").get<double>());
+        }
+        return getAttribute("gridUnitSI").get<std::vector<double>>();
+    }
+    else
+    {
+        // gridUnitSI is an optional attribute
+        // if it is missing, the mesh is interpreted as unscaled
+        return std::vector<double>(retrieveMeshDimensionality(*this), 1.);
+    }
+}
+
+Mesh &Mesh::setGridUnitSIPerDimension(std::vector<double> const &gridUnitSI)
+{
+    if (auto standard = IOHandler()->m_standard;
+        standard < OpenpmdStandard::v_2_0_0)
+    {
+        throw error::IllegalInOpenPMDStandard(
+            "[Mesh::setGridUnitSI] Setting `gridUnitSI` as a vector in a "
+            "file with openPMD version '" +
+            std::string(auxiliary::formatStandard(standard)) +
+            "', but per-axis specification is only supported as of "
+            "openPMD 2.0. Either upgrade the file to openPMD >= 2.0 "
+            "or specify a scalar that applies to all axes.");
+    }
+    setAttribute("gridUnitSI", gridUnitSI);
+    return *this;
+}
+
+Mesh &Mesh::setUnitDimension(unit_representations::AsMap const &udim)
 {
     if (!udim.empty())
     {
         std::array<double, 7> tmpUnitDimension = this->unitDimension();
-        for (auto const &entry : udim)
-            tmpUnitDimension[static_cast<uint8_t>(entry.first)] = entry.second;
+        unit_representations::auxiliary::fromMapOfUnitDimension(
+            tmpUnitDimension.data(), udim);
         setAttribute("unitDimension", tmpUnitDimension);
     }
     return *this;
+}
+
+Mesh &Mesh::setUnitDimension(unit_representations::AsArray const &udim)
+{
+    return setUnitDimension(
+        unit_representations::asMap(udim, /* skip_zeros = */ false));
+}
+
+Mesh &Mesh::setGridUnitDimension(unit_representations::AsMaps const &udims)
+{
+    auto rawGridUnitDimension = [this]() {
+        try
+        {
+            return this->getAttribute("gridUnitDimension")
+                .get<std::vector<double>>();
+        }
+        catch (no_such_attribute_error const &)
+        {
+            return std::vector<double>();
+        }
+    }();
+    rawGridUnitDimension.resize(7 * udims.size());
+    auto cursor = rawGridUnitDimension.begin();
+    for (auto const &udim : udims)
+    {
+        unit_representations::auxiliary::fromMapOfUnitDimension(&*cursor, udim);
+        cursor += 7;
+    }
+    setAttribute("gridUnitDimension", rawGridUnitDimension);
+    return *this;
+}
+
+Mesh &Mesh::setGridUnitDimension(unit_representations::AsArrays const &udims)
+{
+    return setGridUnitDimension(
+        unit_representations::asMaps(udims, /* skip_zeros = */ false));
+}
+
+unit_representations::AsArrays Mesh::gridUnitDimension() const
+{
+    if (containsAttribute("gridUnitDimension"))
+    {
+        std::vector<double> rawRes =
+            getAttribute("gridUnitDimension").get<std::vector<double>>();
+        if (rawRes.size() % 7 != 0)
+        {
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                std::nullopt,
+                "[Mesh::gridUnitDimension()] `gridUnitDimension` attribute "
+                "must have a length equal to a multiple of 7.");
+        }
+        unit_representations::AsArrays res(rawRes.size() / 7);
+        for (size_t dim = 0; dim < res.size(); ++dim)
+        {
+            std::copy_n(rawRes.begin() + dim * 7, 7, res.at(dim).begin());
+        }
+        return res;
+    }
+    else
+    {
+        // gridUnitDimension is an optional attribute
+        // if it is missing, the mesh is interpreted as spatial
+        auto spatialMesh =
+            unit_representations::asArray({{UnitDimension::L, 1}});
+        auto dim = retrieveMeshDimensionality(*this);
+        unit_representations::AsArrays res(dim, spatialMesh);
+        return res;
+    }
 }
 
 template <typename T, typename>
@@ -261,6 +410,18 @@ void Mesh::flush_impl(
             {
                 for (auto &comp : *this)
                     comp.second.flush(comp.first, flushParams);
+            }
+        }
+        if (!containsAttribute("gridUnitSI"))
+        {
+            if (IOHandler()->m_standard < OpenpmdStandard::v_2_0_0)
+            {
+                setGridUnitSI(1);
+            }
+            else
+            {
+                setGridUnitSIPerDimension(
+                    std::vector<double>(retrieveMeshDimensionality(*this), 1));
             }
         }
         flushAttributes(flushParams);
@@ -385,17 +546,35 @@ void Mesh::read()
     aRead.name = "gridUnitSI";
     IOHandler()->enqueue(IOTask(this, aRead));
     IOHandler()->flush(internal::defaultFlushParams);
-    if (auto val = Attribute(*aRead.resource).getOptional<double>();
-        val.has_value())
-        setGridUnitSI(val.value());
+    if (IOHandler()->m_standard >= OpenpmdStandard::v_2_0_0)
+    {
+        if (auto val =
+                Attribute(*aRead.resource).getOptional<std::vector<double>>();
+            val.has_value())
+            setGridUnitSIPerDimension(val.value());
+        else
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                {},
+                "Unexpected Attribute datatype for 'gridUnitSI' "
+                "(expected vector of double, found " +
+                    datatypeToString(Attribute(*aRead.resource).dtype) + ")");
+    }
     else
-        throw error::ReadError(
-            error::AffectedObject::Attribute,
-            error::Reason::UnexpectedContent,
-            {},
-            "Unexpected Attribute datatype for 'gridUnitSI' (expected double, "
-            "found " +
-                datatypeToString(Attribute(*aRead.resource).dtype) + ")");
+    {
+        if (auto val = Attribute(*aRead.resource).getOptional<double>();
+            val.has_value())
+            setGridUnitSI(val.value());
+        else
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                {},
+                "Unexpected Attribute datatype for 'gridUnitSI' "
+                "(expected double, found " +
+                    datatypeToString(Attribute(*aRead.resource).dtype) + ")");
+    }
 
     if (scalar())
     {

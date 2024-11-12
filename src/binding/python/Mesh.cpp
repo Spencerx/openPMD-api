@@ -19,6 +19,9 @@
  * If not, see <http://www.gnu.org/licenses/>.
  */
 #include "openPMD/Mesh.hpp"
+#include "openPMD/Error.hpp"
+#include "openPMD/IO/AbstractIOHandler.hpp"
+#include "openPMD/UnitDimension.hpp"
 #include "openPMD/backend/Attributable.hpp"
 #include "openPMD/backend/BaseRecord.hpp"
 #include "openPMD/backend/MeshRecordComponent.hpp"
@@ -29,6 +32,7 @@
 #include "openPMD/binding/python/UnitDimension.hpp"
 
 #include <string>
+#include <variant>
 #include <vector>
 
 void init_Mesh(py::module &m)
@@ -36,7 +40,7 @@ void init_Mesh(py::module &m)
     auto py_m_cont =
         declare_container<PyMeshContainer, Attributable>(m, "Mesh_Container");
 
-    py::class_<Mesh, BaseRecord<MeshRecordComponent> > cl(m, "Mesh");
+    py::class_<Mesh, BaseRecord<MeshRecordComponent>> cl(m, "Mesh");
 
     py::enum_<Mesh::Geometry>(m, "Geometry") // TODO: m -> cl
         .value("cartesian", Mesh::Geometry::cartesian)
@@ -58,8 +62,32 @@ void init_Mesh(py::module &m)
         .def_property(
             "unit_dimension",
             &Mesh::unitDimension,
-            &Mesh::setUnitDimension,
+            [](Mesh &self,
+               std::variant<
+                   unit_representations::AsMap,
+                   unit_representations::AsArray> const &arg) -> Mesh & {
+                return std::visit(
+                    [&](auto const &arg_resolved) -> Mesh & {
+                        return self.setUnitDimension(arg_resolved);
+                    },
+                    arg);
+            },
             python::doc_unit_dimension)
+
+        .def_property(
+            "grid_unit_dimension",
+            &Mesh::gridUnitDimension,
+            [](Mesh &self,
+               std::variant<
+                   unit_representations::AsMaps,
+                   unit_representations::AsArrays> const &arg) -> Mesh & {
+                return std::visit(
+                    [&](auto const &arg_resolved) -> Mesh & {
+                        return self.setGridUnitDimension(arg_resolved);
+                    },
+                    arg);
+            },
+            python::doc_mesh_unit_dimension)
 
         .def_property(
             "geometry",
@@ -95,14 +123,65 @@ void init_Mesh(py::module &m)
             "grid_global_offset",
             &Mesh::gridGlobalOffset,
             &Mesh::setGridGlobalOffset)
-        .def_property("grid_unit_SI", &Mesh::gridUnitSI, &Mesh::setGridUnitSI)
+        .def_property(
+            "grid_unit_SI",
+            /*
+             * Using pybind11's support for std::variant in order to implement a
+             * polymorphic type for this property. Will be a scalar double in
+             * openPMD 1.*, a list of double in openPMD 2.*.
+             * Unlike in the C++ API, this means that no new API calls
+             * such as gridUnitSIPerDimension() must be added.
+             */
+            [](Mesh &self) {
+                using return_t = std::variant<double, std::vector<double>>;
+                if (self.openPMDStandard() < OpenpmdStandard::v_2_0_0)
+                {
+                    return return_t(self.gridUnitSI());
+                }
+                else
+                {
+                    return return_t(self.gridUnitSIPerDimension());
+                }
+            },
+            [](Mesh &self,
+               std::variant<double, std::vector<double>> const &arg) -> Mesh & {
+                return std::visit(
+                    [&](auto const &arg_resolved) -> Mesh & {
+                        return self.setGridUnitSI(arg_resolved);
+                    },
+                    arg);
+            },
+            &R"(
+For openPMD versions 1.*:
+
+Set the unit-conversion factor to multiply each value in
+Mesh.grid_spacing and Mesh.grid_global_offset, in order to convert from
+simulation units to SI units.
+The type is a scalar floating point.
+
+For openPMD versions 2.*:
+
+Set the unit-conversion **factors per axis** in the order of the axisLabels
+to multiply each value in Mesh.grid_spacing and Mesh.grid_global_offset,
+in order to convert from simulation units to SI units.
+The type is a list of floating points.
+
+When writing a scalar value to an openPMD 2.* file, a warning will be printed
+(for enabling a more comfortable migration to openPMD 2.*).
+When writing a list value to an openPMD 1.* file, an error will be thrown,
+since most openPMD 1.*-based readers will not be able to interpret this
+properly.
+Ref.: https://github.com/openPMD/openPMD-standard/pull/193)"[1])
         .def_property(
             "time_offset",
             &Mesh::timeOffset<double>,
             &Mesh::setTimeOffset<double>)
 
         // TODO remove in future versions (deprecated)
-        .def("set_unit_dimension", &Mesh::setUnitDimension)
+        .def(
+            "set_unit_dimension",
+            py::overload_cast<unit_representations::AsMap const &>(
+                &Mesh::setUnitDimension))
         .def(
             "set_geometry",
             py::overload_cast<Mesh::Geometry>(&Mesh::setGeometry))
@@ -113,7 +192,9 @@ void init_Mesh(py::module &m)
         .def("set_grid_spacing", &Mesh::setGridSpacing<double>)
         .def("set_grid_spacing", &Mesh::setGridSpacing<long double>)
         .def("set_grid_global_offset", &Mesh::setGridGlobalOffset)
-        .def("set_grid_unit_SI", &Mesh::setGridUnitSI);
+        .def(
+            "set_grid_unit_SI",
+            py::overload_cast<double>(&Mesh::setGridUnitSI));
     add_pickle(
         cl, [](openPMD::Series series, std::vector<std::string> const &group) {
             uint64_t const n_it = std::stoull(group.at(1));

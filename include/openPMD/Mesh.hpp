@@ -20,11 +20,11 @@
  */
 #pragma once
 
+#include "openPMD/UnitDimension.hpp"
 #include "openPMD/backend/Attributable.hpp"
 #include "openPMD/backend/BaseRecord.hpp"
 #include "openPMD/backend/MeshRecordComponent.hpp"
 
-#include <array>
 #include <ostream>
 #include <string>
 #include <type_traits>
@@ -155,7 +155,7 @@ public:
      */
     template <
         typename T,
-        typename = std::enable_if_t<std::is_floating_point<T>::value> >
+        typename = std::enable_if_t<std::is_floating_point<T>::value>>
     Mesh &setGridSpacing(std::vector<T> const &gridSpacing);
 
     /**
@@ -184,12 +184,58 @@ public:
      * Mesh::gridSpacing and Mesh::gridGlobalOffset, in order to convert from
      * simulation units to SI units.
      *
+     * Valid for openPMD version 1.*.
+     * In order to specify the gridUnitSI per dimension (openPMD 2.*),
+     * use the vector overload or `setGridUnitSIPerDimension()`.
+     *
      * @param   gridUnitSI  unit-conversion factor to multiply each value in
      * Mesh::gridSpacing and Mesh::gridGlobalOffset, in order to convert from
      * simulation units to SI units.
      * @return  Reference to modified mesh.
      */
     Mesh &setGridUnitSI(double gridUnitSI);
+
+    /** Alias for `setGridUnitSIPerDimension(std::vector<double>)`.
+     *
+     * Set the unit-conversion factors per axis to multiply each value in
+     * Mesh::gridSpacing and Mesh::gridGlobalOffset, in order to convert from
+     * simulation units to SI units.
+     *
+     * Valid for openPMD 2.*.
+     * The legacy behavior (openPMD 1.*, a scalar gridUnitSI) is implemented
+     * by `setGridUnitSI(double)`.
+     *
+     * @param   gridUnitSI  unit-conversion factor to multiply each value in
+     * Mesh::gridSpacing and Mesh::gridGlobalOffset, in order to convert from
+     * simulation units to SI units.
+     *
+     * @return  Reference to modified mesh.
+     */
+    Mesh &setGridUnitSI(std::vector<double> const &gridUnitSI);
+
+    /**
+     * @return  A vector of the gridUnitSI per grid axis in the order of
+     * the axisLabels. If the gridUnitSI is defined as a scalar
+     * (legacy openPMD), the dimensionality is determined and a vector of
+     * `dimensionality` times the scalar vector is returned.
+     */
+    std::vector<double> gridUnitSIPerDimension() const;
+
+    /* Set the unit-conversion factors per axis to multiply each value in
+     * Mesh::gridSpacing and Mesh::gridGlobalOffset, in order to convert from
+     * simulation units to SI units.
+     *
+     * Valid for openPMD 2.*.
+     * The legacy behavior (openPMD 1.*, a scalar gridUnitSI) is implemented
+     * by `setGridUnitSI(double)`.
+     *
+     * @param   gridUnitSI  unit-conversion factor to multiply each value in
+     * Mesh::gridSpacing and Mesh::gridGlobalOffset, in order to convert from
+     * simulation units to SI units.
+     *
+     * @return  Reference to modified mesh.
+     */
+    Mesh &setGridUnitSIPerDimension(std::vector<double> const &gridUnitSI);
 
     /** Set the powers of the 7 base measures characterizing the record's unit
      * in SI.
@@ -198,8 +244,59 @@ public:
      * that represent the power of the particular base.
      * @return  Reference to modified mesh.
      */
+    Mesh &setUnitDimension(unit_representations::AsMap const &unitDimension);
+
+    /** Set the powers of the 7 base measures characterizing the record's unit
+     * in SI.
+     *
+     * @param   unitDimension   array containing seven doubles, each
+     * representing the power of the particular base in order.
+     * @return  Reference to modified mesh.
+     */
+    Mesh &setUnitDimension(unit_representations::AsArray const &unitDimension);
+
+    /**
+     * @brief Set the unitDimension for each axis of the current grid.
+     *
+     * @param gridUnitDimension A vector of the unitDimensions for each
+     * axis of the grid in the order of the axisLabels, in dict representation.
+
+     * Behavior note: This is an updating method, meaning that an SI unit that
+     * has been defined before and is in the next call not explicitly set
+     * in the `std::map<UnitDimension, double>` will keep its previous value.
+     *
+     * @return Reference to modified mesh.
+     */
     Mesh &
-    setUnitDimension(std::map<UnitDimension, double> const &unitDimension);
+    setGridUnitDimension(unit_representations::AsMaps const &gridUnitDimension);
+
+    /**
+     * @brief Set the unitDimension for each axis of the current grid.
+     *
+     * @param gridUnitDimension A vector of the unitDimensions for each
+     * axis of the grid in the order of the axisLabels, in array representation.
+
+     * Behavior note: This is an updating method, meaning that an SI unit that
+     * has been defined before and is in the next call not explicitly set
+     * in the `std::map<UnitDimension, double>` will keep its previous value.
+     *
+     * @return Reference to modified mesh.
+     */
+    Mesh &setGridUnitDimension(
+        unit_representations::AsArrays const &gridUnitDimension);
+
+    /**
+     * @brief Return the physical dimensions of the mesh axes.
+
+     * If the attribute is not defined, the axes are assumed to be spatial
+     * and the return value will be according to this assumption.
+     * If the attribute is defined, the dimensionality of the return value is
+     * not checked against the dimensionality of the mesh.
+     *
+     * @return A vector of arrays, each array representing the SI unit of one
+     * mesh axis.
+     */
+    unit_representations::AsArrays gridUnitDimension() const;
 
     /**
      * @tparam  T   Floating point type of user-selected precision (e.g. float,
@@ -222,7 +319,7 @@ public:
      */
     template <
         typename T,
-        typename = std::enable_if_t<std::is_floating_point<T>::value> >
+        typename = std::enable_if_t<std::is_floating_point<T>::value>>
     Mesh &setTimeOffset(T timeOffset);
 
 private:

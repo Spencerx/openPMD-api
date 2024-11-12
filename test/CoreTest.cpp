@@ -1,4 +1,5 @@
 // expose private and protected members for invasive testing
+#include "openPMD/UnitDimension.hpp"
 #if openPMD_USE_INVASIVE_TESTS
 #define OPENPMD_private public:
 #define OPENPMD_protected public:
@@ -23,6 +24,21 @@
 #include <stdlib.h> // NOLINT(modernize-deprecated-headers)
 #include <string>
 #include <vector>
+
+// On Windows, REQUIRE() might not be able to print more complex data structures
+// upon failure:
+// CoreTest.obj : error LNK2001: unresolved external symbol
+// "class std::string const Catch::Detail::unprintableString" (...)
+#ifdef _WIN32
+#define OPENPMD_REQUIRE_GUARD_WINDOWS(...)                                     \
+    do                                                                         \
+    {                                                                          \
+        bool guarded_require_boolean = __VA_ARGS__;                            \
+        REQUIRE(guarded_require_boolean);                                      \
+    } while (0);
+#else
+#define OPENPMD_REQUIRE_GUARD_WINDOWS(...) REQUIRE(__VA_ARGS__)
+#endif
 
 using namespace openPMD;
 
@@ -528,11 +544,10 @@ TEST_CASE("mesh_constructor_test", "[core]")
     REQUIRE(m.gridSpacing<double>() == gs);
     std::vector<double> ggo{0};
     REQUIRE(m.gridGlobalOffset() == ggo);
-    REQUIRE(m.gridUnitSI() == static_cast<double>(1));
     REQUIRE(
         m.numAttributes() ==
-        8); /* axisLabels, dataOrder, geometry, gridGlobalOffset, gridSpacing,
-               gridUnitSI, timeOffset, unitDimension */
+        7); /* axisLabels, dataOrder, geometry, gridGlobalOffset, gridSpacing,
+               timeOffset, unitDimension */
 
     o.flush();
     REQUIRE(m["x"].unitSI() == 1);
@@ -557,22 +572,22 @@ TEST_CASE("mesh_modification_test", "[core]")
 
     m.setGeometry(Mesh::Geometry::spherical);
     REQUIRE(m.geometry() == Mesh::Geometry::spherical);
-    REQUIRE(m.numAttributes() == 8);
+    REQUIRE(m.numAttributes() == 7);
     m.setDataOrder(Mesh::DataOrder::F);
     REQUIRE(m.dataOrder() == Mesh::DataOrder::F);
-    REQUIRE(m.numAttributes() == 8);
+    REQUIRE(m.numAttributes() == 7);
     std::vector<std::string> al{"z_", "y_", "x_"};
     m.setAxisLabels({"z_", "y_", "x_"});
     REQUIRE(m.axisLabels() == al);
-    REQUIRE(m.numAttributes() == 8);
+    REQUIRE(m.numAttributes() == 7);
     std::vector<double> gs{1e-5, 2e-5, 3e-5};
     m.setGridSpacing(gs);
     REQUIRE(m.gridSpacing<double>() == gs);
-    REQUIRE(m.numAttributes() == 8);
+    REQUIRE(m.numAttributes() == 7);
     std::vector<double> ggo{1e-10, 2e-10, 3e-10};
     m.setGridGlobalOffset({1e-10, 2e-10, 3e-10});
     REQUIRE(m.gridGlobalOffset() == ggo);
-    REQUIRE(m.numAttributes() == 8);
+    REQUIRE(m.numAttributes() == 7);
     m.setGridUnitSI(42.0);
     REQUIRE(m.gridUnitSI() == static_cast<double>(42));
     REQUIRE(m.numAttributes() == 8);
@@ -813,10 +828,10 @@ TEST_CASE("wrapper_test", "[core]")
     REQUIRE(copy.openPMDextension() == 42);
     REQUIRE(copy.iterationEncoding() == IterationEncoding::fileBased);
     REQUIRE(copy.name() == "new_openpmd_output_%T");
-    copy.setOpenPMD("1.2.0");
+    copy.setOpenPMD("1.1.0");
     copy.setIterationEncoding(IterationEncoding::groupBased);
     copy.setName("other_name");
-    REQUIRE(o.openPMD() == "1.2.0");
+    REQUIRE(o.openPMD() == "1.1.0");
     REQUIRE(o.iterationEncoding() == IterationEncoding::groupBased);
     REQUIRE(o.name() == "other_name");
 
@@ -1281,6 +1296,16 @@ TEST_CASE("custom_geometries", "[core]")
         Series write("../samples/custom_geometry.json", Access::CREATE);
         auto E = write.iterations[0].meshes["E"];
         E.setAttribute("geometry", "other:customGeometry");
+        // gridUnitDimension is technically an openPMD 2.0 addition, but since
+        // it's a non-breaking addition, we can also use it in openPMD 1.*
+        // files. However, it only really makes sense to use along with per-axis
+        // gridUnitSI definitions, which are in fact breaking in comparison to
+        // openPMD 1.*.
+        E.setGridUnitDimension(
+            {{{UnitDimension::theta, 1}},
+             {{UnitDimension::M, 1},
+              {UnitDimension::L, 1},
+              {UnitDimension::T, 2}}});
         auto E_x = E["x"];
         E_x.resetDataset({Datatype::INT, {10}});
         E_x.storeChunk(sampleData, {0}, {10});
@@ -1307,6 +1332,13 @@ TEST_CASE("custom_geometries", "[core]")
     {
         Series read("../samples/custom_geometry.json", Access::READ_ONLY);
         auto E = read.iterations[0].meshes["E"];
+        auto compare = unit_representations::AsMaps{
+            {{UnitDimension::theta, 1}},
+            {{UnitDimension::M, 1},
+             {UnitDimension::L, 1},
+             {UnitDimension::T, 2}}};
+        OPENPMD_REQUIRE_GUARD_WINDOWS(
+            unit_representations::asMaps(E.gridUnitDimension()) == compare);
         REQUIRE(
             E.getAttribute("geometry").get<std::string>() ==
             "other:customGeometry");

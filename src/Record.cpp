@@ -20,6 +20,7 @@
  */
 #include "openPMD/Record.hpp"
 #include "openPMD/RecordComponent.hpp"
+#include "openPMD/UnitDimension.hpp"
 #include "openPMD/backend/BaseRecord.hpp"
 
 #include <iostream>
@@ -31,7 +32,7 @@ Record::Record()
     setTimeOffset(0.f);
 }
 
-Record &Record::setUnitDimension(std::map<UnitDimension, double> const &udim)
+Record &Record::setUnitDimension(unit_representations::AsMap const &udim)
 {
     if (!udim.empty())
     {
@@ -41,6 +42,11 @@ Record &Record::setUnitDimension(std::map<UnitDimension, double> const &udim)
         setAttribute("unitDimension", tmpUnitDimension);
     }
     return *this;
+}
+Record &Record::setUnitDimension(unit_representations::AsArray const &udim)
+{
+    return setUnitDimension(
+        unit_representations::asMap(udim, /* skip_zeros = */ false));
 }
 
 void Record::flush_impl(

@@ -18,6 +18,15 @@ int main()
         return 0;
     }
 
+    // Access the Series linearly. This means that upon opening the Series, no
+    // data is accessed yet. Instead, the single Iterations are processed
+    // collectively, one after the other, and data access only happens upon
+    // explicitly accessing an Iteration from `Series::snapshots()`. Note that
+    // the Container API of `Series::snapshots()` will work in a restricted mode
+    // compared to the `READ_RANDOM_ACCESS` access type, refer also to the
+    // documentation of the `Snapshots` class in `snapshots/Snapshots.hpp`. This
+    // restricted workflow enables performance optimizations in the backends,
+    // and more importantly is compatible with streaming I/O.
     Series series = Series("electrons.sst", Access::READ_LINEAR, R"(
 {
   "adios2": {
@@ -29,15 +38,9 @@ int main()
   }
 })");
 
-    // `Series::writeIterations()` and `Series::readIterations()` are
-    // intentionally restricted APIs that ensure a workflow which also works
-    // in streaming setups, e.g. an iteration cannot be opened again once
-    // it has been closed.
-    // `Series::iterations` can be directly accessed in random-access workflows.
-    for (IndexedIteration iteration : series.readIterations())
+    for (auto &[index, iteration] : series.snapshots())
     {
-        std::cout << "Current iteration: " << iteration.iterationIndex
-                  << std::endl;
+        std::cout << "Current iteration: " << index << std::endl;
         Record electronPositions = iteration.particles["e"]["position"];
         std::array<RecordComponent::shared_ptr_dataset_types, 3> loadedChunks;
         std::array<Extent, 3> extents;

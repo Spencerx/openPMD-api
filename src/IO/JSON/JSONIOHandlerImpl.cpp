@@ -25,12 +25,13 @@
 #include "openPMD/Error.hpp"
 #include "openPMD/IO/AbstractIOHandler.hpp"
 #include "openPMD/IO/AbstractIOHandlerImpl.hpp"
-#include "openPMD/IO/Access.hpp"
+#include "openPMD/ThrowError.hpp"
 #include "openPMD/auxiliary/Filesystem.hpp"
 #include "openPMD/auxiliary/JSON_internal.hpp"
 #include "openPMD/auxiliary/Memory.hpp"
 #include "openPMD/auxiliary/StringManip.hpp"
 #include "openPMD/auxiliary/TypeTraits.hpp"
+#include "openPMD/backend/Attribute.hpp"
 #include "openPMD/backend/Writable.hpp"
 
 #include <iomanip>
@@ -64,6 +65,14 @@ namespace openPMD
             throw std::runtime_error((TEXT));                                  \
     }
 
+namespace JSONDefaults
+{
+    using const_str = char const *const;
+    constexpr const_str openpmd_internal = "__openPMD_internal";
+    constexpr const_str DatasetMode = "dataset_mode";
+    constexpr const_str AttributeMode = "attribute_mode";
+} // namespace JSONDefaults
+
 namespace
 {
     struct DefaultValue
@@ -94,7 +103,11 @@ namespace
         }
 #endif
 
-        static constexpr char const *errorMsg = "JSON default value";
+        template <int>
+        static nlohmann::json call()
+        {
+            return 0;
+        }
     };
 
     /*
@@ -126,33 +139,310 @@ namespace
         }
         return *accum_ptr;
     }
+
+    void warnUnusedJson(openPMD::json::TracingJSON const &jsonConfig)
+    {
+        auto shadow = jsonConfig.invertShadow();
+        if (shadow.size() > 0)
+        {
+            switch (jsonConfig.originallySpecifiedAs)
+            {
+            case openPMD::json::SupportedLanguages::JSON:
+                std::cerr << "Warning: parts of the backend configuration for "
+                             "JSON/TOML backend remain unused:\n"
+                          << shadow << '\n';
+                break;
+            case openPMD::json::SupportedLanguages::TOML: {
+                auto asToml = openPMD::json::jsonToToml(shadow);
+                std::cerr << "Warning: parts of the backend configuration for "
+                             "JSON/TOML backend remain unused:\n"
+                          << json::format_toml(asToml) << '\n';
+                break;
+            }
+            }
+        }
+    }
+
+    // Does the same as datatypeToString(), but this makes sure that we don't
+    // accidentally change the JSON schema by modifying datatypeToString()
+    std::string jsonDatatypeToString(Datatype dt)
+    {
+        switch (dt)
+        {
+            using DT = Datatype;
+        case DT::CHAR:
+            return "CHAR";
+        case DT::UCHAR:
+            return "UCHAR";
+        case DT::SCHAR:
+            return "SCHAR";
+        case DT::SHORT:
+            return "SHORT";
+        case DT::INT:
+            return "INT";
+        case DT::LONG:
+            return "LONG";
+        case DT::LONGLONG:
+            return "LONGLONG";
+        case DT::USHORT:
+            return "USHORT";
+        case DT::UINT:
+            return "UINT";
+        case DT::ULONG:
+            return "ULONG";
+        case DT::ULONGLONG:
+            return "ULONGLONG";
+        case DT::FLOAT:
+            return "FLOAT";
+        case DT::DOUBLE:
+            return "DOUBLE";
+        case DT::LONG_DOUBLE:
+            return "LONG_DOUBLE";
+        case DT::CFLOAT:
+            return "CFLOAT";
+        case DT::CDOUBLE:
+            return "CDOUBLE";
+        case DT::CLONG_DOUBLE:
+            return "CLONG_DOUBLE";
+        case DT::STRING:
+            return "STRING";
+        case DT::VEC_CHAR:
+            return "VEC_CHAR";
+        case DT::VEC_SHORT:
+            return "VEC_SHORT";
+        case DT::VEC_INT:
+            return "VEC_INT";
+        case DT::VEC_LONG:
+            return "VEC_LONG";
+        case DT::VEC_LONGLONG:
+            return "VEC_LONGLONG";
+        case DT::VEC_UCHAR:
+            return "VEC_UCHAR";
+        case DT::VEC_USHORT:
+            return "VEC_USHORT";
+        case DT::VEC_UINT:
+            return "VEC_UINT";
+        case DT::VEC_ULONG:
+            return "VEC_ULONG";
+        case DT::VEC_ULONGLONG:
+            return "VEC_ULONGLONG";
+        case DT::VEC_FLOAT:
+            return "VEC_FLOAT";
+        case DT::VEC_DOUBLE:
+            return "VEC_DOUBLE";
+        case DT::VEC_LONG_DOUBLE:
+            return "VEC_LONG_DOUBLE";
+        case DT::VEC_CFLOAT:
+            return "VEC_CFLOAT";
+        case DT::VEC_CDOUBLE:
+            return "VEC_CDOUBLE";
+        case DT::VEC_CLONG_DOUBLE:
+            return "VEC_CLONG_DOUBLE";
+        case DT::VEC_SCHAR:
+            return "VEC_SCHAR";
+        case DT::VEC_STRING:
+            return "VEC_STRING";
+        case DT::ARR_DBL_7:
+            return "ARR_DBL_7";
+        case DT::BOOL:
+            return "BOOL";
+        case DT::UNDEFINED:
+            return "UNDEFINED";
+        }
+        return "Unreachable!";
+    }
 } // namespace
+
+auto JSONIOHandlerImpl::retrieveDatasetMode(
+    openPMD::json::TracingJSON &config) const -> DatasetMode_s
+{
+    // start with / copy from current config
+    auto res = m_datasetMode;
+    DatasetMode &ioMode = res.m_mode;
+    SpecificationVia &specificationVia = res.m_specificationVia;
+    bool &skipWarnings = res.m_skipWarnings;
+    if (auto [configLocation, maybeConfig] = getBackendConfig(config);
+        maybeConfig.has_value())
+    {
+        auto jsonConfig = maybeConfig.value();
+        if (jsonConfig.json().contains("dataset"))
+        {
+            auto datasetConfig = jsonConfig["dataset"];
+            if (datasetConfig.json().contains("mode"))
+            {
+                auto modeOption = openPMD::json::asLowerCaseStringDynamic(
+                    datasetConfig["mode"].json());
+                if (!modeOption.has_value())
+                {
+                    throw error::BackendConfigSchema(
+                        {configLocation, "mode"},
+                        "Invalid value of non-string type (accepted values are "
+                        "'dataset' and 'template'.");
+                }
+                auto mode = modeOption.value();
+                if (mode == "dataset")
+                {
+                    ioMode = DatasetMode::Dataset;
+                    specificationVia = SpecificationVia::Manually;
+                }
+                else if (mode == "template")
+                {
+                    ioMode = DatasetMode::Template;
+                    specificationVia = SpecificationVia::Manually;
+                }
+                else if (mode == "template_no_warn")
+                {
+                    ioMode = DatasetMode::Template;
+                    specificationVia = SpecificationVia::Manually;
+                    skipWarnings = true;
+                }
+                else
+                {
+                    throw error::BackendConfigSchema(
+                        {configLocation, "dataset", "mode"},
+                        "Invalid value: '" + mode +
+                            "' (accepted values are 'dataset' and 'template'.");
+                }
+            }
+        }
+    }
+    return res;
+}
+
+auto JSONIOHandlerImpl::retrieveAttributeMode(
+    openPMD::json::TracingJSON &config) const -> AttributeMode_s
+{
+    // start with / copy from current config
+    auto res = m_attributeMode;
+    AttributeMode &mode = res.m_mode;
+    SpecificationVia &specificationVia = res.m_specificationVia;
+    if (auto [configLocation, maybeConfig] = getBackendConfig(config);
+        maybeConfig.has_value())
+    {
+        auto jsonConfig = maybeConfig.value();
+        if (jsonConfig.json().contains("attribute"))
+        {
+            auto attributeConfig = jsonConfig["attribute"];
+            if (attributeConfig.json().contains("mode"))
+            {
+                auto modeOption = openPMD::json::asLowerCaseStringDynamic(
+                    attributeConfig["mode"].json());
+                if (!modeOption.has_value())
+                {
+                    throw error::BackendConfigSchema(
+                        {configLocation, "mode"},
+                        "Invalid value of non-string type (accepted values are "
+                        "'dataset' and 'template'.");
+                }
+                auto modeCfg = modeOption.value();
+                if (modeCfg == "short")
+                {
+                    mode = AttributeMode::Short;
+                    specificationVia = SpecificationVia::Manually;
+                }
+                else if (modeCfg == "long")
+                {
+                    mode = AttributeMode::Long;
+                    specificationVia = SpecificationVia::Manually;
+                }
+                else
+                {
+                    throw error::BackendConfigSchema(
+                        {configLocation, "attribute", "mode"},
+                        "Invalid value: '" + modeCfg +
+                            "' (accepted values are 'short' and 'long'.");
+                }
+            }
+        }
+    }
+    return res;
+}
+
+std::string JSONIOHandlerImpl::backendConfigKey() const
+{
+    switch (m_fileFormat)
+    {
+    case FileFormat::Json:
+        return "json";
+    case FileFormat::Toml:
+        return "toml";
+    }
+    throw std::runtime_error("Unreachable!");
+}
+
+std::pair<std::string, std::optional<openPMD::json::TracingJSON>>
+JSONIOHandlerImpl::getBackendConfig(openPMD::json::TracingJSON &config) const
+{
+    std::string configLocation = backendConfigKey();
+    if (config.json().contains(configLocation))
+    {
+        return std::make_pair(
+            std::move(configLocation), config[configLocation]);
+    }
+    else
+    {
+        return std::make_pair(std::move(configLocation), std::nullopt);
+    }
+}
 
 JSONIOHandlerImpl::JSONIOHandlerImpl(
     AbstractIOHandler *handler,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
-    [[maybe_unused]] openPMD::json::TracingJSON config,
+    openPMD::json::TracingJSON config,
     FileFormat format,
     std::string originalExtension)
     : AbstractIOHandlerImpl(handler)
     , m_fileFormat{format}
     , m_originalExtension{std::move(originalExtension)}
-{}
+{
+    init(std::move(config));
+}
 
 #if openPMD_HAVE_MPI
 JSONIOHandlerImpl::JSONIOHandlerImpl(
     AbstractIOHandler *handler,
     MPI_Comm comm,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
-    [[maybe_unused]] openPMD::json::TracingJSON config,
+    openPMD::json::TracingJSON config,
     FileFormat format,
     std::string originalExtension)
     : AbstractIOHandlerImpl(handler)
     , m_communicator{comm}
     , m_fileFormat{format}
     , m_originalExtension{std::move(originalExtension)}
-{}
+{
+    init(std::move(config));
+}
 #endif
+
+void JSONIOHandlerImpl::init(openPMD::json::TracingJSON config)
+{
+    // set the defaults
+    switch (m_fileFormat)
+    {
+    case FileFormat::Json:
+        // Set the attribute mode to Long for now, needs to be evaluated
+        // again when creating a new file, since the openPMD version might
+        // be specified via Series::setOpenPMD() after initialization of the
+        // JSON backend.
+        m_attributeMode.m_mode = AttributeMode::Long;
+        m_datasetMode.m_mode = DatasetMode::Dataset;
+        break;
+    case FileFormat::Toml:
+        m_attributeMode.m_mode = AttributeMode::Short;
+        m_datasetMode.m_mode = DatasetMode::Dataset;
+        break;
+    }
+
+    // now modify according to config
+    m_datasetMode = retrieveDatasetMode(config);
+    m_attributeMode = retrieveAttributeMode(config);
+
+    if (auto [_, backendConfig] = getBackendConfig(config);
+        backendConfig.has_value())
+    {
+        (void)_;
+        warnUnusedJson(backendConfig.value());
+    }
+}
 
 JSONIOHandlerImpl::~JSONIOHandlerImpl() = default;
 
@@ -178,6 +468,25 @@ void JSONIOHandlerImpl::createFile(
     VERIFY_ALWAYS(
         access::write(m_handler->m_backendAccess),
         "[JSON] Creating a file in read-only mode is not possible.");
+
+    /*
+     * Need to resolve this later than init() since the openPMD version might be
+     * specified after the creation of the IOHandler.
+     */
+    if (m_attributeMode.m_specificationVia == SpecificationVia::DefaultValue)
+    {
+        switch (m_fileFormat)
+        {
+        case FileFormat::Json:
+            m_attributeMode.m_mode =
+                m_handler->m_standard >= OpenpmdStandard::v_2_0_0
+                ? AttributeMode::Short
+                : AttributeMode::Long;
+            break;
+        default:
+            break;
+        }
+    }
 
     if (!writable->written)
     {
@@ -292,6 +601,25 @@ void JSONIOHandlerImpl::createDataset(
             "JSON", "Joined Arrays currently only supported in ADIOS2");
     }
 
+    openPMD::json::TracingJSON config = openPMD::json::parseOptions(
+        parameter.options, /* considerFiles = */ false);
+    // Retrieves mode from dataset-specific configuration, falls back to global
+    // value if not defined
+    DatasetMode_s dm;
+    auto [localMode, _, skipWarnings] = retrieveDatasetMode(config);
+    (void)_;
+    // No use in introducing logic to skip warnings only for one particular
+    // dataset. If warnings are skipped, then they are skipped consistently.
+    // Use |= since `false` is the default value and we don't wish to reset
+    // the flag.
+    m_datasetMode.m_skipWarnings |= skipWarnings;
+
+    parameter.warnUnusedParameters(
+        config,
+        backendConfigKey(),
+        "Warning: parts of the dataset-specific backend configuration for "
+        "JSON/TOML backend remain unused");
+
     if (!writable->written)
     {
         /* Sanitize name */
@@ -308,24 +636,49 @@ void JSONIOHandlerImpl::createDataset(
         }
         setAndGetFilePosition(writable, name);
         auto &dset = jsonVal[name];
-        dset["datatype"] = datatypeToString(parameter.dtype);
-        auto extent = parameter.extent;
-        switch (parameter.dtype)
+        dset["datatype"] = jsonDatatypeToString(parameter.dtype);
+
+        switch (localMode)
         {
-        case Datatype::CFLOAT:
-        case Datatype::CDOUBLE:
-        case Datatype::CLONG_DOUBLE: {
-            extent.push_back(2);
+        case DatasetMode::Dataset: {
+            auto extent = parameter.extent;
+            switch (parameter.dtype)
+            {
+            case Datatype::CFLOAT:
+            case Datatype::CDOUBLE:
+            case Datatype::CLONG_DOUBLE: {
+                extent.push_back(2);
+                break;
+            }
+            default:
+                break;
+            }
+            if (parameter.extent.size() != 1 ||
+                parameter.extent[0] != Dataset::UNDEFINED_EXTENT)
+            {
+                // TOML does not support nulls, so initialize with zero
+                dset["data"] = initializeNDArray(
+                    extent,
+                    m_fileFormat == FileFormat::Json ? std::optional<Datatype>{}
+                                                     : parameter.dtype);
+            }
             break;
         }
-        default:
+        case DatasetMode::Template:
+            if (parameter.extent != Extent{0} &&
+                parameter.extent[0] != Dataset::UNDEFINED_EXTENT)
+            {
+                dset["extent"] = parameter.extent;
+            }
+            else
+            {
+                // no-op
+                // If extent is empty or no datatype is defined, don't bother
+                // writing it.
+                // The datatype is written above anyway.
+            }
             break;
         }
-        // TOML does not support nulls, so initialize with zero
-        dset["data"] = initializeNDArray(
-            extent,
-            m_fileFormat == FileFormat::Json ? std::optional<Datatype>()
-                                             : parameter.dtype);
         writable->written = true;
         m_dirty.emplace(file);
     }
@@ -364,9 +717,11 @@ void JSONIOHandlerImpl::extendDataset(
     refreshFileFromParent(writable);
     auto &j = obtainJsonContents(writable);
 
+    DatasetMode localIOMode;
     try
     {
-        auto datasetExtent = getExtent(j);
+        Extent datasetExtent;
+        std::tie(datasetExtent, localIOMode) = getExtent(j);
         VERIFY_ALWAYS(
             datasetExtent.size() == parameters.extent.size(),
             "[JSON] Cannot change dimensionality of a dataset")
@@ -383,28 +738,40 @@ void JSONIOHandlerImpl::extendDataset(
         throw std::runtime_error(
             "[JSON] The specified location contains no valid dataset");
     }
-    auto extent = parameters.extent;
-    auto datatype = stringToDatatype(j["datatype"].get<std::string>());
-    switch (datatype)
+
+    switch (localIOMode)
     {
-    case Datatype::CFLOAT:
-    case Datatype::CDOUBLE:
-    case Datatype::CLONG_DOUBLE: {
-        extent.push_back(2);
-        break;
+    case DatasetMode::Dataset: {
+        auto extent = parameters.extent;
+        auto datatype = stringToDatatype(j["datatype"].get<std::string>());
+        switch (datatype)
+        {
+        case Datatype::CFLOAT:
+        case Datatype::CDOUBLE:
+        case Datatype::CLONG_DOUBLE: {
+            extent.push_back(2);
+            break;
+        }
+        default:
+            // nothing to do
+            break;
+        }
+        // TOML does not support nulls, so initialize with zero
+        nlohmann::json newData = initializeNDArray(
+            extent,
+            m_fileFormat == FileFormat::Json ? std::optional<Datatype>{}
+                                             : datatype);
+        nlohmann::json &oldData = j["data"];
+        mergeInto(newData, oldData);
+        j["data"] = newData;
     }
-    default:
-        // nothing to do
-        break;
+    break;
+    case DatasetMode::Template: {
+        j["extent"] = parameters.extent;
     }
-    // TOML does not support nulls, so initialize with zero
-    nlohmann::json newData = initializeNDArray(
-        extent,
-        m_fileFormat == FileFormat::Json ? std::optional<Datatype>()
-                                         : datatype);
-    nlohmann::json &oldData = j["data"];
-    mergeInto(newData, oldData);
-    j["data"] = newData;
+    break;
+    }
+
     writable->written = true;
 }
 
@@ -700,7 +1067,7 @@ void JSONIOHandlerImpl::openDataset(
 
     *parameters.dtype =
         Datatype(stringToDatatype(datasetJson["datatype"].get<std::string>()));
-    *parameters.extent = getExtent(datasetJson);
+    *parameters.extent = getExtent(datasetJson).first;
     writable->written = true;
 }
 
@@ -883,7 +1250,21 @@ void JSONIOHandlerImpl::writeDataset(
     auto file = refreshFileFromParent(writable);
     auto &j = obtainJsonContents(writable);
 
-    verifyDataset(parameters, j);
+    switch (verifyDataset(parameters, j))
+    {
+    case DatasetMode::Dataset:
+        break;
+    case DatasetMode::Template:
+        if (!m_datasetMode.m_skipWarnings)
+        {
+            std::cerr
+                << "[JSON/TOML backend: Warning] Trying to write data to a "
+                   "template dataset. Will skip."
+                << '\n';
+            m_datasetMode.m_skipWarnings = true;
+        }
+        return;
+    }
 
     switchType<DatasetWriter>(parameters.dtype, j, parameters);
 
@@ -919,11 +1300,42 @@ void JSONIOHandlerImpl::writeAttribute(
     }
     nlohmann::json value;
     switchType<AttributeWriter>(parameter.dtype, value, parameter.resource);
-    (*jsonVal)[filePosition->id]["attributes"][parameter.name] = {
-        {"datatype", datatypeToString(parameter.dtype)}, {"value", value}};
+    switch (m_attributeMode.m_mode)
+    {
+    case AttributeMode::Long:
+        (*jsonVal)[filePosition->id]["attributes"][parameter.name] = {
+            {"datatype", jsonDatatypeToString(parameter.dtype)},
+            {"value", value}};
+        break;
+    case AttributeMode::Short:
+        // short form
+        (*jsonVal)[filePosition->id]["attributes"][parameter.name] = value;
+        break;
+    }
     writable->written = true;
     m_dirty.emplace(file);
 }
+
+namespace
+{
+    struct FillWithZeroes
+    {
+        template <typename T>
+        static void call(void *ptr, Extent const &extent)
+        {
+            T *casted = static_cast<T *>(ptr);
+            size_t flattenedExtent = std::accumulate(
+                extent.begin(),
+                extent.end(),
+                size_t(1),
+                [](size_t left, size_t right) { return left * right; });
+            std::fill_n(casted, flattenedExtent, T{});
+        }
+
+        static constexpr char const *errorMsg =
+            "[JSON Backend] Fill with zeroes.";
+    };
+} // namespace
 
 void JSONIOHandlerImpl::readDataset(
     Writable *writable, Parameter<Operation::READ_DATASET> &parameters)
@@ -931,18 +1343,291 @@ void JSONIOHandlerImpl::readDataset(
     refreshFileFromParent(writable);
     setAndGetFilePosition(writable);
     auto &j = obtainJsonContents(writable);
-    verifyDataset(parameters, j);
+    DatasetMode localMode = verifyDataset(parameters, j);
 
-    try
+    switch (localMode)
     {
-        switchType<DatasetReader>(parameters.dtype, j["data"], parameters);
-    }
-    catch (json::basic_json::type_error &)
-    {
-        throw std::runtime_error(
-            "[JSON] The given path does not contain a valid dataset.");
+    case DatasetMode::Template:
+        std::cerr << "[Warning] Cannot read chunks in Template mode of JSON "
+                     "backend. Will fill with zeroes instead."
+                  << '\n';
+        switchNonVectorType<FillWithZeroes>(
+            parameters.dtype, parameters.data.get(), parameters.extent);
+        return;
+    case DatasetMode::Dataset:
+        try
+        {
+            switchType<DatasetReader>(parameters.dtype, j["data"], parameters);
+        }
+        catch (json::basic_json::type_error &)
+        {
+            throw error::ReadError(
+                error::AffectedObject::Dataset,
+                error::Reason::UnexpectedContent,
+                "JSON",
+                "The given path does not contain a valid dataset.");
+        }
+        break;
     }
 }
+
+namespace
+{
+    /*
+     * While the short attribute representation is more easily human-readable
+     * (and ultimately also closer to the idea of JSON), this means that
+     * recovering the actual datatype of an attribute is now more difficult.
+     * The functions in this anonymous namespace take care of doing that.
+     */
+
+    /*
+     * Input: Element type `T` that has already been resolved and a JSON value
+     * `j` containing a flat array with elements of type `T`.
+     * Output: An openPMD Attribute containing that array.
+     */
+    template <typename T>
+    Attribute recoverVectorAttributeFromJson(nlohmann::json const &j)
+    {
+        if (!j.is_array())
+        {
+            throw std::runtime_error(
+                "[JSON backend: recoverVectorAttributeFromJson] Internal "
+                "control flow error.");
+        }
+
+        if (j.size() == 7 &&
+            (std::is_same_v<T, nlohmann::json::number_float_t> ||
+             std::is_same_v<T, nlohmann::json::number_integer_t> ||
+             std::is_same_v<T, nlohmann::json::number_unsigned_t>))
+        {
+            /*
+             * The JSON value does not contain enough information to distinguish
+             * ARRAY_DOUBLE_7 from other VECTOR types. Return the array type if
+             * it applies, the frontend must deal with correctly converting
+             * to vector types when needed.
+             */
+            std::array<double, 7> res;
+            for (size_t i = 0; i < 7; ++i)
+            {
+                res[i] = j[i].get<double>();
+            }
+            return res;
+        }
+        else
+        {
+            std::vector<T> res;
+            res.reserve(j.size());
+            for (auto const &i : j)
+            {
+                res.push_back(i.get<T>());
+            }
+            return res;
+        }
+    }
+
+    /*
+     * Input: A JSON array whose first element has been found to be some numeric
+     * type.
+     *
+     * We now need to decide, if the array has type unsigned, integer or
+     * float. All elements need to be inspected for this since the first element
+     * might be `1`, but the third might be `-3.14`, and we need a datatype
+     * generic enough to represent all elements.
+     *
+     * Output: That datatype as instance of the nlohmann::json::value_t enum.
+     */
+    nlohmann::json::value_t unifyNumericType(nlohmann::json const &j)
+    {
+        if (!j.is_array() || j.empty())
+        {
+            throw std::runtime_error(
+                "[JSON backend: recoverVectorAttributeFromJson] Internal "
+                "control flow error.");
+        }
+        auto dtypeRanking = [](nlohmann::json::value_t dtype) -> unsigned {
+            switch (dtype)
+            {
+            case nlohmann::json::value_t::number_unsigned:
+                return 0;
+            case nlohmann::json::value_t::number_integer:
+                return 1;
+            case nlohmann::json::value_t::number_float:
+                return 2;
+            default:
+                throw std::runtime_error(
+                    "[JSON backend] Encountered vector with mixed number and "
+                    "non-number datatypes.");
+            }
+        };
+        auto higherDtype =
+            [&dtypeRanking](
+                nlohmann::json::value_t dt1,
+                nlohmann::json::value_t dt2) -> nlohmann::json::value_t {
+            if (dtypeRanking(dt1) > dtypeRanking(dt2))
+            {
+                return dt1;
+            }
+            else
+            {
+                return dt2;
+            }
+        };
+
+        nlohmann::json::value_t res = j[0].type();
+        for (size_t i = 1; i < j.size(); ++i)
+        {
+            res = higherDtype(res, j[i].type());
+        }
+        return res;
+    }
+
+    /* Input: A JSON array `j`, additionally its name for use in error messages
+     * Output: The array as an openPMD Attribute with adequate recovered
+     *         datatype
+     */
+    Attribute recoverVectorAttributeFromJson(
+        nlohmann::json const &j, std::string const &nameForErrorMessages)
+    {
+        if (j.empty())
+        {
+#if 0 // probably no need to warn here
+                std::cerr << "Cannot recover datatype of empty vector without "
+                             "explicit type annotation for attribute '"
+                          << nameForErrorMessages
+                          << "'. Will continue with VEC_INT datatype."
+                          << '\n';
+#endif
+            /*
+             * Since an empty array's datatype cannot be recovered without
+             * type annotations, we need to use some type.
+             * In that case, use integers.
+             */
+            return std::vector<int>{};
+        }
+
+        auto valueType = j[0].type();
+        /*
+         * If the vector is of numeric type, it might happen that the
+         * first entry is an integer, but a later entry is a float.
+         * We need to pick the most generic datatype in that case.
+         */
+        if (valueType == nlohmann::json::value_t::number_float ||
+            valueType == nlohmann::json::value_t::number_unsigned ||
+            valueType == nlohmann::json::value_t::number_integer)
+        {
+            valueType = unifyNumericType(j);
+        }
+        switch (valueType)
+        {
+        case nlohmann::json::value_t::null:
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                "JSON",
+                " Attribute must not be null: '" + nameForErrorMessages + "'.");
+        case nlohmann::json::value_t::object:
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                "JSON",
+                " Invalid contained datatype (object) "
+                "inside vector-type attribute: '" +
+                    nameForErrorMessages + "'.");
+        case nlohmann::json::value_t::array:
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                "JSON",
+                " Invalid contained datatype (array) "
+                "inside vector-type attribute: '" +
+                    nameForErrorMessages + "'.");
+        case nlohmann::json::value_t::string:
+            return recoverVectorAttributeFromJson<std::string>(j);
+        case nlohmann::json::value_t::boolean:
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                "JSON",
+                " Attribute must not be vector of bool: "
+                "'" +
+                    nameForErrorMessages + "'.");
+        case nlohmann::json::value_t::number_integer:
+            return recoverVectorAttributeFromJson<
+                nlohmann::json::number_integer_t>(j);
+        case nlohmann::json::value_t::number_unsigned:
+            return recoverVectorAttributeFromJson<
+                nlohmann::json::number_unsigned_t>(j);
+        case nlohmann::json::value_t::number_float:
+            return recoverVectorAttributeFromJson<
+                nlohmann::json::number_float_t>(j);
+        case nlohmann::json::value_t::binary:
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                "JSON",
+                " Attribute must not have binary type: "
+                "'" +
+                    nameForErrorMessages + "'.");
+        case nlohmann::json::value_t::discarded:
+            throw std::runtime_error(
+                "Internal JSON parser datatype leaked into JSON "
+                "value.");
+        }
+        throw std::runtime_error("Unreachable!");
+    }
+
+    /*
+     * Read a shorthand-type JSON attribute into an openPMD attribute,
+     * recovering the datatype from the JSON value.
+     * Note that precise datatype-preserving roundtrips are not possible due to
+     * JSON not encoding byte-level type details.
+     */
+    Attribute recoverAttributeFromJson(
+        nlohmann::json const &j, std::string const &nameForErrorMessages)
+    {
+        // @todo use ReadError once it's mainlined
+        switch (j.type())
+        {
+        case nlohmann::json::value_t::null:
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                "JSON",
+                "Attribute must not be null: '" + nameForErrorMessages + "'.");
+        case nlohmann::json::value_t::object:
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                "JSON",
+                "Shorthand-style attribute must not be an "
+                "object: '" +
+                    nameForErrorMessages + "'.");
+        case nlohmann::json::value_t::array:
+            return recoverVectorAttributeFromJson(j, nameForErrorMessages);
+        case nlohmann::json::value_t::string:
+            return j.get<std::string>();
+        case nlohmann::json::value_t::boolean:
+            return j.get<bool>();
+        case nlohmann::json::value_t::number_integer:
+            return j.get<nlohmann::json::number_integer_t>();
+        case nlohmann::json::value_t::number_unsigned:
+            return j.get<nlohmann::json::number_unsigned_t>();
+        case nlohmann::json::value_t::number_float:
+            return j.get<nlohmann::json::number_float_t>();
+        case nlohmann::json::value_t::binary:
+            throw error::ReadError(
+                error::AffectedObject::Attribute,
+                error::Reason::UnexpectedContent,
+                "JSON",
+                " Attribute must not have binary type: '" +
+                    nameForErrorMessages + "'.");
+        case nlohmann::json::value_t::discarded:
+            throw std::runtime_error(
+                "Internal JSON parser datatype leaked into JSON value.");
+        }
+        throw std::runtime_error("Unreachable!");
+    }
+} // namespace
 
 void JSONIOHandlerImpl::readAttribute(
     Writable *writable, Parameter<Operation::READ_ATT> &parameters)
@@ -968,9 +1653,19 @@ void JSONIOHandlerImpl::readAttribute(
     auto &j = jsonLoc[name];
     try
     {
-        *parameters.dtype =
-            Datatype(stringToDatatype(j["datatype"].get<std::string>()));
-        switchType<AttributeReader>(*parameters.dtype, j["value"], parameters);
+        if (j.is_object())
+        {
+            *parameters.dtype =
+                Datatype(stringToDatatype(j["datatype"].get<std::string>()));
+            switchType<AttributeReader>(
+                *parameters.dtype, j["value"], parameters);
+        }
+        else
+        {
+            Attribute attr = recoverAttributeFromJson(j, name);
+            *parameters.dtype = attr.dtype;
+            *parameters.resource = attr.getResource();
+        }
     }
     catch (json::type_error &)
     {
@@ -1196,28 +1891,44 @@ Extent JSONIOHandlerImpl::getMultiplicators(Extent const &extent)
     return res;
 }
 
-Extent JSONIOHandlerImpl::getExtent(nlohmann::json &j)
+auto JSONIOHandlerImpl::getExtent(nlohmann::json &j)
+    -> std::pair<Extent, DatasetMode>
 {
     Extent res;
-    nlohmann::json *ptr = &j["data"];
-    while (ptr->is_array())
+    DatasetMode ioMode;
+    if (j.contains("data"))
     {
-        res.push_back(ptr->size());
-        ptr = &(*ptr)[0];
+        ioMode = DatasetMode::Dataset;
+        nlohmann::json *ptr = &j["data"];
+        while (ptr->is_array())
+        {
+            res.push_back(ptr->size());
+            ptr = &(*ptr)[0];
+        }
+        switch (stringToDatatype(j["datatype"].get<std::string>()))
+        {
+        case Datatype::CFLOAT:
+        case Datatype::CDOUBLE:
+        case Datatype::CLONG_DOUBLE:
+            // the last "dimension" is only the two entries for the complex
+            // number, so remove that again
+            res.erase(res.end() - 1);
+            break;
+        default:
+            break;
+        }
     }
-    switch (stringToDatatype(j["datatype"].get<std::string>()))
+    else if (j.contains("extent"))
     {
-    case Datatype::CFLOAT:
-    case Datatype::CDOUBLE:
-    case Datatype::CLONG_DOUBLE:
-        // the last "dimension" is only the two entries for the complex
-        // number, so remove that again
-        res.erase(res.end() - 1);
-        break;
-    default:
-        break;
+        ioMode = DatasetMode::Template;
+        res = j["extent"].get<Extent>();
     }
-    return res;
+    else
+    {
+        ioMode = DatasetMode::Template;
+        res = {Dataset::UNDEFINED_EXTENT};
+    }
+    return std::make_pair(std::move(res), ioMode);
 }
 
 std::string JSONIOHandlerImpl::removeSlashes(std::string s)
@@ -1354,6 +2065,79 @@ JSONIOHandlerImpl::obtainJsonContents(File const &file)
     auto res = serialImplementation();
 #endif
 
+    if (res->contains(JSONDefaults::openpmd_internal))
+    {
+        auto const &openpmd_internal = res->at(JSONDefaults::openpmd_internal);
+
+        // Init dataset mode according to file's default.
+        // Note that dataset parsing will expect and properly deal with both
+        // representations. The mode to be detected here will determine the the
+        // layout of newly created datasets, e.g. in READ_WRITE or APPEND mode.
+        if (m_datasetMode.m_specificationVia ==
+                SpecificationVia::DefaultValue &&
+            openpmd_internal.contains(JSONDefaults::DatasetMode))
+        {
+            auto modeOption = openPMD::json::asLowerCaseStringDynamic(
+                openpmd_internal.at(JSONDefaults::DatasetMode));
+            if (!modeOption.has_value())
+            {
+                std::cerr
+                    << "[JSON/TOML backend] Warning: Invalid value of "
+                       "non-string type at internal meta table for entry '"
+                    << JSONDefaults::DatasetMode
+                    << "'. Will ignore and continue.\n";
+            }
+            else if (modeOption.value() == "dataset")
+            {
+                m_datasetMode.m_mode = DatasetMode::Dataset;
+            }
+            else if (modeOption.value() == "template")
+            {
+                m_datasetMode.m_mode = DatasetMode::Template;
+            }
+            else
+            {
+                std::cerr << "[JSON/TOML backend] Warning: Invalid value '"
+                          << modeOption.value()
+                          << "' at internal meta table for entry '"
+                          << JSONDefaults::DatasetMode
+                          << "'. Will ignore and continue." << '\n';
+            }
+        }
+
+        // Same for attribute mode
+        if (m_attributeMode.m_specificationVia ==
+                SpecificationVia::DefaultValue &&
+            openpmd_internal.contains(JSONDefaults::AttributeMode))
+        {
+            auto modeOption = openPMD::json::asLowerCaseStringDynamic(
+                openpmd_internal.at(JSONDefaults::AttributeMode));
+            if (!modeOption.has_value())
+            {
+                std::cerr
+                    << "[JSON/TOML backend] Warning: Invalid value of "
+                       "non-string type at internal meta table for entry '"
+                    << JSONDefaults::AttributeMode
+                    << "'. Will ignore and continue." << '\n';
+            }
+            else if (modeOption.value() == "long")
+            {
+                m_attributeMode.m_mode = AttributeMode::Long;
+            }
+            else if (modeOption.value() == "short")
+            {
+                m_attributeMode.m_mode = AttributeMode::Short;
+            }
+            else
+            {
+                std::cerr << "[JSON/TOML backend] Warning: Invalid value '"
+                          << modeOption.value()
+                          << "' at internal meta table for entry '"
+                          << JSONDefaults::DatasetMode
+                          << "'. Will ignore and continue." << '\n';
+            }
+        }
+    }
     m_jsonVals.emplace(file, res);
     return res;
 }
@@ -1379,7 +2163,30 @@ auto JSONIOHandlerImpl::putJsonContents(
         return it;
     }
 
-    (*it->second)["platform_byte_widths"] = platformSpecifics();
+    switch (m_datasetMode.m_mode)
+    {
+    case DatasetMode::Dataset:
+        (*it->second)["platform_byte_widths"] = platformSpecifics();
+        (*it->second)[JSONDefaults::openpmd_internal]
+                     [JSONDefaults::DatasetMode] = "dataset";
+        break;
+    case DatasetMode::Template:
+        (*it->second)[JSONDefaults::openpmd_internal]
+                     [JSONDefaults::DatasetMode] = "template";
+        break;
+    }
+
+    switch (m_attributeMode.m_mode)
+    {
+    case AttributeMode::Short:
+        (*it->second)[JSONDefaults::openpmd_internal]
+                     [JSONDefaults::AttributeMode] = "short";
+        break;
+    case AttributeMode::Long:
+        (*it->second)[JSONDefaults::openpmd_internal]
+                     [JSONDefaults::AttributeMode] = "long";
+        break;
+    }
 
     auto writeSingleFile = [this, &it](std::string const &writeThisFile) {
         auto [fh, _, fh_with_precision] =
@@ -1496,6 +2303,7 @@ merge the .json files somehow (no tooling provided for this (yet)).
 #else
     serialImplementation();
 #endif
+
     if (unsetDirty)
     {
         m_dirty.erase(filename);
@@ -1582,8 +2390,8 @@ bool JSONIOHandlerImpl::isDataset(nlohmann::json const &j)
     {
         return false;
     }
-    auto i = j.find("data");
-    return i != j.end() && i.value().is_array();
+    auto i = j.find("datatype");
+    return i != j.end() && i.value().is_string();
 }
 
 bool JSONIOHandlerImpl::isGroup(nlohmann::json::const_iterator const &it)
@@ -1594,21 +2402,24 @@ bool JSONIOHandlerImpl::isGroup(nlohmann::json::const_iterator const &it)
     {
         return false;
     }
-    auto i = j.find("data");
-    return i == j.end() || !i.value().is_array();
+
+    auto i = j.find("datatype");
+    return i == j.end() || !i.value().is_string();
 }
 
 template <typename Param>
-void JSONIOHandlerImpl::verifyDataset(
-    Param const &parameters, nlohmann::json &j)
+auto JSONIOHandlerImpl::verifyDataset(
+    Param const &parameters, nlohmann::json &j) -> DatasetMode
 {
     VERIFY_ALWAYS(
         isDataset(j),
         "[JSON] Specified dataset does not exist or is not a dataset.");
 
+    DatasetMode res;
     try
     {
-        auto datasetExtent = getExtent(j);
+        Extent datasetExtent;
+        std::tie(datasetExtent, res) = getExtent(j);
         VERIFY_ALWAYS(
             datasetExtent.size() == parameters.extent.size(),
             "[JSON] Read/Write request does not fit the dataset's dimension");
@@ -1630,6 +2441,7 @@ void JSONIOHandlerImpl::verifyDataset(
         throw std::runtime_error(
             "[JSON] The given path does not contain a valid dataset.");
     }
+    return res;
 }
 
 nlohmann::json JSONIOHandlerImpl::platformSpecifics()
@@ -1655,7 +2467,7 @@ nlohmann::json JSONIOHandlerImpl::platformSpecifics()
         Datatype::BOOL};
     for (auto it = std::begin(datatypes); it != std::end(datatypes); it++)
     {
-        res[datatypeToString(*it)] = toBytes(*it);
+        res[jsonDatatypeToString(*it)] = toBytes(*it);
     }
     return res;
 }
@@ -1711,7 +2523,7 @@ nlohmann::json JSONIOHandlerImpl::CppToJSON<T>::operator()(const T &val)
 }
 
 template <typename T>
-nlohmann::json JSONIOHandlerImpl::CppToJSON<std::vector<T> >::operator()(
+nlohmann::json JSONIOHandlerImpl::CppToJSON<std::vector<T>>::operator()(
     const std::vector<T> &v)
 {
     nlohmann::json j;
@@ -1724,7 +2536,7 @@ nlohmann::json JSONIOHandlerImpl::CppToJSON<std::vector<T> >::operator()(
 }
 
 template <typename T, int n>
-nlohmann::json JSONIOHandlerImpl::CppToJSON<std::array<T, n> >::operator()(
+nlohmann::json JSONIOHandlerImpl::CppToJSON<std::array<T, n>>::operator()(
     const std::array<T, n> &v)
 {
     nlohmann::json j;
@@ -1743,7 +2555,7 @@ T JSONIOHandlerImpl::JsonToCpp<T, Dummy>::operator()(nlohmann::json const &json)
 }
 
 template <typename T>
-std::vector<T> JSONIOHandlerImpl::JsonToCpp<std::vector<T> >::operator()(
+std::vector<T> JSONIOHandlerImpl::JsonToCpp<std::vector<T>>::operator()(
     nlohmann::json const &json)
 {
     std::vector<T> v;
@@ -1756,7 +2568,7 @@ std::vector<T> JSONIOHandlerImpl::JsonToCpp<std::vector<T> >::operator()(
 }
 
 template <typename T, int n>
-std::array<T, n> JSONIOHandlerImpl::JsonToCpp<std::array<T, n> >::operator()(
+std::array<T, n> JSONIOHandlerImpl::JsonToCpp<std::array<T, n>>::operator()(
     nlohmann::json const &json)
 {
     std::array<T, n> a;

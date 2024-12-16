@@ -41,7 +41,24 @@ class Dataset
 public:
     enum : std::uint64_t
     {
-        JOINED_DIMENSION = std::numeric_limits<std::uint64_t>::max()
+        /**
+         * Setting one dimension of the extent as JOINED_DIMENSION means that
+         * the extent along that dimension will be defined by the sum of all
+         * parallel processes' contributions.
+         * Only one dimension can be joined. For store operations, the offset
+         * should be an empty array and the extent should give the actual
+         * extent of the chunk (i.e. the number of joined elements along the
+         * joined dimension, equal to the global extent in all other
+         * dimensions). For more details, refer to
+         * docs/source/usage/workflow.rst.
+         */
+        JOINED_DIMENSION = std::numeric_limits<std::uint64_t>::max(),
+        /**
+         * Some backends (i.e. JSON and TOML in template mode) support the
+         * creation of dataset with undefined datatype and extent.
+         * The extent should be given as {UNDEFINED_EXTENT} for that.
+         */
+        UNDEFINED_EXTENT = std::numeric_limits<std::uint64_t>::max() - 1
     };
 
     Dataset(Datatype, Extent, std::string options = "{}");
@@ -49,10 +66,15 @@ public:
     /**
      * @brief Constructor that sets the datatype to undefined.
      *
-     * Helpful for resizing datasets, since datatypes need not be given twice.
+     * Helpful for:
+     *
+     * 1. Resizing datasets, since datatypes need not be given twice.
+     * 2. Initializing datasets as undefined, as used by template mode in the
+     *    JSON/TOML backend. In this case, the default (undefined) specification
+     *    for the Extent may be used.
      *
      */
-    Dataset(Extent);
+    Dataset(Extent = {UNDEFINED_EXTENT});
 
     Dataset &extend(Extent newExtent);
 

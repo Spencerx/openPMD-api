@@ -180,6 +180,8 @@ public:
         std::string originalExtension);
 #endif
 
+    void init(openPMD::json::TracingJSON config);
+
     ~JSONIOHandlerImpl() override;
 
     void
@@ -265,7 +267,84 @@ private:
      */
     FileFormat m_fileFormat{};
 
+    /*
+     * Under which key do we find the backend configuration?
+     * -> "json" for the JSON backend, "toml" for the TOML backend.
+     */
+    std::string backendConfigKey() const;
+
+    /*
+     * First return value: The location of the JSON value (either "json" or
+     * "toml") Second return value: The value that was maybe found at this place
+     */
+    std::pair<std::string, std::optional<openPMD::json::TracingJSON>>
+    getBackendConfig(openPMD::json::TracingJSON &) const;
+
     std::string m_originalExtension;
+
+    /*
+     * Was the config value explicitly user-chosen, or are we still working with
+     * defaults?
+     */
+    enum class SpecificationVia
+    {
+        DefaultValue,
+        Manually
+    };
+
+    /////////////////////
+    // Dataset IO mode //
+    /////////////////////
+
+    enum class DatasetMode
+    {
+        Dataset,
+        Template
+    };
+
+    // IOMode m_mode{};
+    // SpecificationVia m_IOModeSpecificationVia =
+    // SpecificationVia::DefaultValue; bool m_printedSkippedWriteWarningAlready
+    // = false;
+
+    struct DatasetMode_s
+    {
+        // Initialized in init()
+        DatasetMode m_mode{};
+        SpecificationVia m_specificationVia;
+        bool m_skipWarnings;
+
+        template <typename A, typename B, typename C>
+        operator std::tuple<A, B, C>()
+        {
+            return std::tuple<A, B, C>{
+                m_mode, m_specificationVia, m_skipWarnings};
+        }
+    };
+    DatasetMode_s m_datasetMode;
+    DatasetMode_s retrieveDatasetMode(openPMD::json::TracingJSON &config) const;
+
+    ///////////////////////
+    // Attribute IO mode //
+    ///////////////////////
+
+    enum class AttributeMode
+    {
+        Short,
+        Long
+    };
+
+    struct AttributeMode_s
+    {
+        // Will be modified in init() based on the openPMD version and the
+        // active file format (JSON/TOML)
+        AttributeMode m_mode{};
+        SpecificationVia m_specificationVia = SpecificationVia::DefaultValue;
+    };
+    AttributeMode_s m_attributeMode;
+
+    AttributeMode_s
+    retrieveAttributeMode(openPMD::json::TracingJSON &config) const;
 
     // HELPER FUNCTIONS
 
@@ -313,7 +392,7 @@ private:
     // essentially: m_i = \prod_{j=0}^{i-1} extent_j
     static Extent getMultiplicators(Extent const &extent);
 
-    static Extent getExtent(nlohmann::json &j);
+    static std::pair<Extent, DatasetMode> getExtent(nlohmann::json &j);
 
     // remove single '/' in the beginning and end of a string
     static std::string removeSlashes(std::string);
@@ -371,7 +450,7 @@ private:
 
     // check whether the json reference contains a valid dataset
     template <typename Param>
-    void verifyDataset(Param const &parameters, nlohmann::json &);
+    DatasetMode verifyDataset(Param const &parameters, nlohmann::json &);
 
     static nlohmann::json platformSpecifics();
 

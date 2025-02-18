@@ -23,6 +23,7 @@
 
 #include "openPMD/config.hpp"
 
+#include <deque>
 #include <nlohmann/json.hpp>
 #include <toml.hpp>
 
@@ -150,6 +151,11 @@ namespace json
          *
          */
         nlohmann::json *m_positionInShadow;
+        /**
+         * @brief (Redundantly) track the current path within the JSON value.
+         *        Used (currently) only for more precise error messages.
+         */
+        std::deque<std::string> m_positionForErrorMessages;
         bool m_trace = true;
 
         void invertShadow(
@@ -160,8 +166,20 @@ namespace json
             std::shared_ptr<nlohmann::json> shadow,
             nlohmann::json *positionInOriginal,
             nlohmann::json *positionInShadow,
+            std::deque<std::string> positionForErrorMessages,
             SupportedLanguages originallySpecifiedAs,
             bool trace);
+
+        void init();
+        /*
+         * Called upon each traced access of a location in the JSON value, along
+         * with the matching subtree of the shadow.
+         * This implements the `dont_warn_unused_keys` functionality.
+         */
+        static void init(
+            nlohmann::json const &original,
+            nlohmann::json &shadow,
+            std::deque<std::string> &positionForErrorMessages);
     };
 
     template <typename Key>
@@ -178,11 +196,14 @@ namespace json
             newPositionInShadow = &m_positionInShadow->operator[](key);
         }
         bool traceFurther = newPositionInOriginal->is_object();
+        auto new_path = m_positionForErrorMessages;
+        new_path.push_back(std::forward<Key>(key));
         return TracingJSON(
             m_originalJSON,
             m_shadow,
             newPositionInOriginal,
             newPositionInShadow,
+            std::move(new_path),
             originallySpecifiedAs,
             traceFurther);
     }

@@ -6,13 +6,13 @@
 #
 spack:
   specs:
-  - adios2
+  - adios2@2.10
   - hdf5
   - openmpi
 
   packages:
     adios2:
-      variants: ~zfp ~sz ~png ~dataman ~python ~fortran ~ssc ~shared ~bzip2
+      variants: ~zfp ~sz ~png ~dataman ~python ~fortran ~ssc ~shared ~bzip2 ~mgard ~blosc2
     cmake:
       externals:
       - spec: cmake@3.23.0

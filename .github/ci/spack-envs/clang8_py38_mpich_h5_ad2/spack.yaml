@@ -6,13 +6,13 @@
 #
 spack:
   specs:
-  - adios2@2.7.1
+  - adios2@2.10
   - hdf5
   - mpich
 
   packages:
     adios2:
-      variants: ~zfp ~sz ~png ~dataman ~python ~fortran ~ssc ~shared ~bzip2
+      variants: ~zfp ~sz ~png ~dataman ~python ~fortran ~ssc ~shared ~bzip2 ~blosc2
     cmake:
       externals:
       - spec: cmake@3.23.0

@@ -1,10 +1,11 @@
 // expose private and protected members for invasive testing
-#include "openPMD/UnitDimension.hpp"
 #if openPMD_USE_INVASIVE_TESTS
 #define OPENPMD_private public:
 #define OPENPMD_protected public:
 #endif
 #include "openPMD/openPMD.hpp"
+
+#include "Files_Core/CoreTests.hpp"
 
 #include "openPMD/IO/ADIOS/macros.hpp"
 #include "openPMD/auxiliary/Filesystem.hpp"
@@ -1497,6 +1498,11 @@ TEST_CASE("unavailable_backend", "[core]")
             "'HDF5'.");
     }
 #endif
+}
+
+TEST_CASE("automatic_variable_encoding", "[adios2]")
+{
+    automatic_variable_encoding::automatic_variable_encoding();
 }
 
 TEST_CASE("unique_ptr", "[core]")

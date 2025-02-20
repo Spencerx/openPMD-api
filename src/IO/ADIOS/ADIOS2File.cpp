@@ -21,12 +21,14 @@
 
 #include "openPMD/IO/ADIOS/ADIOS2File.hpp"
 #include "openPMD/Error.hpp"
+#include "openPMD/IO/ADIOS/ADIOS2Auxiliary.hpp"
 #include "openPMD/IO/ADIOS/ADIOS2IOHandler.hpp"
 #include "openPMD/IO/AbstractIOHandler.hpp"
 #include "openPMD/IterationEncoding.hpp"
 #include "openPMD/auxiliary/Environment.hpp"
 #include "openPMD/auxiliary/StringManip.hpp"
 
+#include <optional>
 #include <stdexcept>
 
 #if openPMD_USE_VERIFY
@@ -58,10 +60,11 @@ void DatasetReader::call(
     detail::BufferedGet &bp,
     adios2::IO &IO,
     adios2::Engine &engine,
-    std::string const &fileName)
+    std::string const &fileName,
+    std::optional<size_t> stepSelection)
 {
-    adios2::Variable<T> var =
-        impl->verifyDataset<T>(bp.param.offset, bp.param.extent, IO, bp.name);
+    adios2::Variable<T> var = impl->verifyDataset<T>(
+        bp.param.offset, bp.param.extent, IO, bp.name, stepSelection);
     if (!var)
     {
         throw std::runtime_error(
@@ -90,7 +93,11 @@ void WriteDataset::call(ADIOS2File &ba, detail::BufferedPut &bp)
                 auto ptr = static_cast<T const *>(arg.get());
 
                 adios2::Variable<T> var = ba.m_impl->verifyDataset<T>(
-                    bp.param.offset, bp.param.extent, ba.m_IO, bp.name);
+                    bp.param.offset,
+                    bp.param.extent,
+                    ba.m_IO,
+                    bp.name,
+                    std::nullopt);
 
                 ba.getEngine().Put(var, ptr);
             }
@@ -133,7 +140,13 @@ void WriteDataset::call(Params &&...)
 void BufferedGet::run(ADIOS2File &ba)
 {
     switchAdios2VariableType<detail::DatasetReader>(
-        param.dtype, ba.m_impl, *this, ba.m_IO, ba.getEngine(), ba.m_file);
+        param.dtype,
+        ba.m_impl,
+        *this,
+        ba.m_IO,
+        ba.getEngine(),
+        ba.m_file,
+        ba.stepSelection());
 }
 
 void BufferedPut::run(ADIOS2File &ba)
@@ -148,7 +161,11 @@ struct RunUniquePtrPut
     {
         auto ptr = static_cast<T const *>(bufferedPut.data.get());
         adios2::Variable<T> var = ba.m_impl->verifyDataset<T>(
-            bufferedPut.offset, bufferedPut.extent, ba.m_IO, bufferedPut.name);
+            bufferedPut.offset,
+            bufferedPut.extent,
+            ba.m_IO,
+            bufferedPut.name,
+            std::nullopt);
         ba.getEngine().Put(var, ptr);
     }
 
@@ -337,6 +354,38 @@ size_t ADIOS2File::currentStep()
     }
 }
 
+void ADIOS2File::setStepSelection(std::optional<size_t> step)
+{
+    if (streamStatus != StreamStatus::ReadWithoutStream)
+    {
+        throw error::Internal(
+            "ADIOS2 backend: Cannot only use random-access step selections "
+            "when reading without streaming mode.");
+    }
+    if (!step.has_value())
+    {
+        m_currentStep = 0;
+        useStepSelection = false;
+    }
+    else
+    {
+        m_currentStep = *step;
+        useStepSelection = true;
+    }
+}
+
+std::optional<size_t> ADIOS2File::stepSelection() const
+{
+    if (useStepSelection)
+    {
+        return {m_currentStep};
+    }
+    else
+    {
+        return std::nullopt;
+    }
+}
+
 void ADIOS2File::configure_IO_Read()
 {
     bool upfrontParsing = supportsUpfrontParsing(
@@ -432,14 +481,10 @@ void ADIOS2File::configure_IO()
         {
             switch (m_impl->m_handler->m_encoding)
             {
-            /*
-             * For variable-based encoding, this does not matter as it is
-             * new and requires >= v2.9 features anyway.
-             */
             case IterationEncoding::variableBased:
+            case IterationEncoding::groupBased:
                 m_impl->m_useGroupTable = UseGroupTable::Yes;
                 break;
-            case IterationEncoding::groupBased:
             case IterationEncoding::fileBased:
                 m_impl->m_useGroupTable = UseGroupTable::No;
                 break;
@@ -454,6 +499,12 @@ void ADIOS2File::configure_IO()
                 ? ADIOS2IOHandlerImpl::ModifiableAttributes::Yes
                 : ADIOS2IOHandlerImpl::ModifiableAttributes::No;
         }
+        m_IO.DefineAttribute<bool_representation>(
+            adios_defaults::str_useModifiableAttributes,
+            m_impl->m_modifiableAttributes ==
+                    ADIOS2IOHandlerImpl::ModifiableAttributes::No
+                ? 0
+                : 1);
     }
 
     // set engine type

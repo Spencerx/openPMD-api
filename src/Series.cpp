@@ -38,6 +38,7 @@
 #include "openPMD/auxiliary/StringManip.hpp"
 #include "openPMD/auxiliary/Variant.hpp"
 #include "openPMD/backend/Attributable.hpp"
+#include "openPMD/backend/Attribute.hpp"
 #include "openPMD/snapshots/ContainerImpls.hpp"
 #include "openPMD/snapshots/IteratorTraits.hpp"
 #include "openPMD/snapshots/RandomAccessIterator.hpp"
@@ -57,6 +58,7 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -253,6 +255,14 @@ chunk_assignment::RankMeta Series::rankTable([[maybe_unused]] bool collective)
     {
         rankTable.m_bufferedRead = chunk_assignment::RankMeta{};
         return {};
+    }
+    if (iterationEncoding() == IterationEncoding::variableBased &&
+        IOHandler()->m_backendAccess == Access::READ_RANDOM_ACCESS)
+    {
+        Parameter<Operation::ADVANCE> advance;
+        advance.mode =
+            Parameter<Operation::ADVANCE>::StepSelection{std::nullopt};
+        IOHandler()->enqueue(IOTask(this, std::move(advance)));
     }
     Parameter<Operation::OPEN_DATASET> openDataset;
     openDataset.name = "rankTable";
@@ -579,45 +589,7 @@ IterationEncoding Series::iterationEncoding() const
 
 Series &Series::setIterationEncoding(IterationEncoding ie)
 {
-    auto &series = get();
-    if (series.m_deferred_initialization)
-    {
-        runDeferredInitialization();
-    }
-    if (written())
-        throw std::runtime_error(
-            "A files iterationEncoding can not (yet) be changed after it has "
-            "been written.");
-
-    series.m_iterationEncoding = ie;
-    switch (ie)
-    {
-    case IterationEncoding::fileBased:
-        setIterationFormat(series.m_name);
-        setAttribute("iterationEncoding", std::string("fileBased"));
-        // This checks that the name contains the expansion pattern
-        // (e.g. %T) and parses it
-        if (series.m_filenamePadding < 0)
-        {
-            if (!reparseExpansionPattern(series.m_name))
-            {
-                throw error::WrongAPIUsage(
-                    "For fileBased formats the iteration expansion pattern "
-                    "%T must "
-                    "be included in the file name");
-            }
-        }
-        break;
-    case IterationEncoding::groupBased:
-        setIterationFormat(BASEPATH);
-        setAttribute("iterationEncoding", std::string("groupBased"));
-        break;
-    case IterationEncoding::variableBased:
-        setIterationFormat(auxiliary::replace_first(basePath(), "/%T/", ""));
-        setAttribute("iterationEncoding", std::string("variableBased"));
-        break;
-    }
-    IOHandler()->setIterationEncoding(ie);
+    setIterationEncoding_internal(ie, internal::default_or_explicit::explicit_);
     return *this;
 }
 
@@ -1167,8 +1139,10 @@ Given file pattern: ')END"
                  * allow setting attributes in that case */
                 setWritten(false, Attributable::EnqueueAsynchronously::No);
 
-                initDefaults(input->iterationEncoding);
-                setIterationEncoding(input->iterationEncoding);
+                initDefaults(series.m_iterationEncoding);
+                setIterationEncoding_internal(
+                    series.m_iterationEncoding,
+                    series.m_iterationEncodingSetExplicitly);
 
                 setWritten(true, Attributable::EnqueueAsynchronously::No);
             }
@@ -1184,12 +1158,14 @@ Given file pattern: ')END"
     }
     case Access::CREATE: {
         initDefaults(input->iterationEncoding);
-        setIterationEncoding(input->iterationEncoding);
+        setIterationEncoding_internal(
+            input->iterationEncoding, series.m_iterationEncodingSetExplicitly);
         break;
     }
     case Access::APPEND: {
         initDefaults(input->iterationEncoding);
-        setIterationEncoding(input->iterationEncoding);
+        setIterationEncoding_internal(
+            input->iterationEncoding, series.m_iterationEncodingSetExplicitly);
         if (input->iterationEncoding != IterationEncoding::fileBased)
         {
             break;
@@ -1446,6 +1422,13 @@ void Series::flushGorVBased(
                 break;
             case IO::HasBeenOpened:
                 // continue below
+                if (randomAccessSteps() && !series.m_snapshotToStep.empty())
+                {
+                    Parameter<Operation::ADVANCE> param;
+                    param.mode = Parameter<Operation::ADVANCE>::StepSelection{
+                        series.m_snapshotToStep.at(it->first)};
+                    IOHandler()->enqueue(IOTask(this, std::move(param)));
+                }
                 it->second.flush(flushParams);
                 break;
             }
@@ -1848,7 +1831,8 @@ void Series::readOneIterationFileBased(std::string const &filePath)
                 "Unknown iterationEncoding: " + encoding);
         auto old_written = written();
         setWritten(false, Attributable::EnqueueAsynchronously::No);
-        setIterationEncoding(encoding_out);
+        setIterationEncoding_internal(
+            encoding_out, internal::default_or_explicit::explicit_);
         setWritten(old_written, Attributable::EnqueueAsynchronously::Yes);
     }
     else
@@ -1949,18 +1933,9 @@ auto Series::readGorVBased(
             else if (encoding == "variableBased")
             {
                 series.m_iterationEncoding = IterationEncoding::variableBased;
-                if (IOHandler()->m_frontendAccess == Access::READ_ONLY)
+                if (IOHandler()->m_frontendAccess == Access::READ_WRITE)
                 {
-                    std::cerr << R"(
-The opened Series uses variable-based encoding, but is being accessed by
-READ_ONLY mode which operates in random-access manner.
-Random-access is (currently) unsupported by variable-based encoding
-and some iterations may not be found by this access mode.
-Consider using Access::READ_LINEAR and Series::readIterations().)"
-                              << std::endl;
-                }
-                else if (IOHandler()->m_frontendAccess == Access::READ_WRITE)
-                {
+                    // @todo hmm see what happens
                     throw error::WrongAPIUsage(R"(
 The opened Series uses variable-based encoding, but is being accessed by
 READ_WRITE mode which does not (yet) support variable-based encoding.
@@ -2057,11 +2032,11 @@ creating new iterations.
     /*
      * Return error if one is caught.
      */
-    auto readSingleIteration =
-        [&series, &pOpen, this](
-            IterationIndex_t index,
-            std::string const &path,
-            bool beginStep) -> std::optional<error::ReadError> {
+    auto readSingleIteration = [&series, &pOpen, this](
+                                   IterationIndex_t index,
+                                   std::string const &path,
+                                   internal::BeginStep const &beginStep)
+        -> std::optional<error::ReadError> {
         if (series.iterations.contains(index))
         {
             // maybe re-read
@@ -2133,7 +2108,12 @@ creating new iterations.
             }
             if (auto err = internal::withRWAccess(
                     IOHandler()->m_seriesStatus,
-                    [&]() { return readSingleIteration(index, it, false); });
+                    [&]() {
+                        return readSingleIteration(
+                            index,
+                            it,
+                            internal::BeginStepTypes::DontBeginStep{});
+                    });
                 err)
             {
                 std::cerr << "Cannot read iteration " << index
@@ -2164,10 +2144,29 @@ creating new iterations.
     case IterationEncoding::variableBased: {
         if (!currentSteps.has_value() || currentSteps.value().empty())
         {
-            currentSteps = std::vector<IterationIndex_t>{
-                read_only_this_single_iteration.has_value()
-                    ? *read_only_this_single_iteration
-                    : 0};
+            if (!read_only_this_single_iteration.has_value())
+            {
+                Parameter<Operation::LIST_DATASETS> ld;
+                Parameter<Operation::LIST_PATHS> lp;
+                IOHandler()->enqueue(IOTask(&iterations, ld));
+                IOHandler()->enqueue(IOTask(&iterations, lp));
+                IOHandler()->flush(internal::defaultFlushParams);
+                if (ld.datasets->empty() && lp.paths->empty())
+                {
+                    return {}; // no iterations, just global attributes
+                }
+                else
+                {
+                    // there is data, defaulting to calling this Iteration idx 0
+                    // when no further info is available
+                    currentSteps = std::vector<IterationIndex_t>{0};
+                }
+            }
+            else
+            {
+                currentSteps = std::vector<IterationIndex_t>{
+                    *read_only_this_single_iteration};
+            }
         }
         else if (read_only_this_single_iteration.has_value())
         {
@@ -2190,10 +2189,18 @@ creating new iterations.
              * Variable-based iteration encoding relies on steps, so parsing
              * must happen after opening the first step.
              */
+            using namespace internal;
+            BeginStep beginStep = randomAccessSteps()
+                ? (series.m_snapshotToStep.empty()
+                       ? BeginStepTypes::make<BeginStepTypes::DontBeginStep>()
+                       : BeginStepTypes::make<
+                             BeginStepTypes::BeginStepRandomAccess>(
+                             series.m_snapshotToStep.at(it)))
+                : BeginStepTypes::make<BeginStepTypes::BeginStepSequentially>();
             if (auto err = internal::withRWAccess(
                     IOHandler()->m_seriesStatus,
-                    [&readSingleIteration, it]() {
-                        return readSingleIteration(it, "", true);
+                    [&readSingleIteration, it, &beginStep]() {
+                        return readSingleIteration(it, "", beginStep);
                     });
                 err)
             {
@@ -2630,6 +2637,59 @@ void Series::flushStep(bool doFlush)
     series.m_wroteAtLeastOneIOStep = true;
 }
 
+Series &Series::setIterationEncoding_internal(
+    IterationEncoding ie, internal::default_or_explicit doe)
+{
+    auto &series = get();
+    switch (doe)
+    {
+    case internal::default_or_explicit::default_:
+    case internal::default_or_explicit::explicit_:
+        // mark this option as set explicitly by the user
+        series.m_iterationEncodingSetExplicitly = doe;
+        break;
+    }
+    if (series.m_deferred_initialization)
+    {
+        runDeferredInitialization();
+    }
+    if (written())
+        throw std::runtime_error(
+            "A files iterationEncoding can not (yet) be changed after it has "
+            "been written.");
+
+    series.m_iterationEncoding = ie;
+    switch (ie)
+    {
+    case IterationEncoding::fileBased:
+        setIterationFormat(series.m_name);
+        setAttribute("iterationEncoding", std::string("fileBased"));
+        // This checks that the name contains the expansion pattern
+        // (e.g. %T) and parses it
+        if (series.m_filenamePadding < 0)
+        {
+            if (!reparseExpansionPattern(series.m_name))
+            {
+                throw error::WrongAPIUsage(
+                    "For fileBased formats the iteration expansion pattern "
+                    "%T must "
+                    "be included in the file name");
+            }
+        }
+        break;
+    case IterationEncoding::groupBased:
+        setIterationFormat(BASEPATH);
+        setAttribute("iterationEncoding", std::string("groupBased"));
+        break;
+    case IterationEncoding::variableBased:
+        setIterationFormat(auxiliary::replace_first(basePath(), "/%T/", ""));
+        setAttribute("iterationEncoding", std::string("variableBased"));
+        break;
+    }
+    IOHandler()->setIterationEncoding(ie);
+    return *this;
+}
+
 auto Series::openIterationIfDirty(IterationIndex_t index, Iteration &iteration)
     -> IterationOpened
 {
@@ -2924,6 +2984,8 @@ void Series::parseJsonOptions(TracingJSON &options, ParsedInput &input)
             options, "iteration_encoding", iterationEncoding);
         if (!iterationEncoding.empty())
         {
+            series.m_iterationEncodingSetExplicitly =
+                internal::default_or_explicit::explicit_;
             auto it = ieDescriptors.find(iterationEncoding);
             if (it != ieDescriptors.end())
             {
@@ -3175,6 +3237,38 @@ Series::snapshots(std::optional<SnapshotWorkflow> const snapshot_workflow)
         }
     }
 
+    /*
+     * ADIOS2 should use variable-based encoding as a default when applicable,
+     * since group-based encoding has severe limitations in ADIOS2.
+     * The below logic checks if variable-based encoding should be used.
+     */
+
+    if (
+        // 1. No encoding has been explicitly selected by the user.
+        //    Flag set by Series::setIterationEncoding().
+        series.m_iterationEncodingSetExplicitly ==
+            internal::default_or_explicit::default_ &&
+        // 2. Iteration encoding was recognized as groupBased by init()
+        //    procedures (and not file-based).
+        series.m_iterationEncoding == IterationEncoding::groupBased &&
+        // 3. The IO workflow will be synchronous, necessary for writing
+        //    variable-based data (but not for reading!).
+        usedSnapshotWorkflow == SnapshotWorkflow::Synchronous &&
+        // 4. The chosen access type is write-only, otherwise the encoding is
+        //    determined by the previous file content.
+        access::writeOnly(access) &&
+        // 5. The backend is ADIOS2 in a recent enough version to support
+        //    modifiable attributes (v2.9).
+        IOHandler()->fullSupportForVariableBasedEncoding() &&
+        // 6. The Series must not yet be written, otherwise we're too late
+        //    for this
+        !this->written())
+    {
+        setIterationEncoding_internal(
+            IterationEncoding::variableBased,
+            internal::default_or_explicit::default_);
+    }
+
     switch (usedSnapshotWorkflow)
     {
     case SnapshotWorkflow::RandomAccess: {
@@ -3223,8 +3317,7 @@ void Series::close()
     m_attri.reset();
 }
 
-auto Series::currentSnapshot() const
-    -> std::optional<std::vector<IterationIndex_t>>
+auto Series::currentSnapshot() -> std::optional<std::vector<IterationIndex_t>>
 {
     using vec_t = std::vector<IterationIndex_t>;
     auto &series = get();
@@ -3235,7 +3328,32 @@ auto Series::currentSnapshot() const
      * `/data/snapshot`. This makes it possible to retrieve it from
      * `series.iterations`.
      */
-    if (series.iterations.containsAttribute("snapshot"))
+    if (!series.iterations.containsAttribute("snapshot"))
+    {
+        return std::nullopt;
+    }
+    else if (randomAccessSteps())
+    {
+        auto preparsed = preparseSnapshots();
+        if (!preparsed.has_value())
+        {
+            return std::nullopt;
+        }
+        std::set<IterationIndex_t> res;
+        for (size_t step = 0; step < preparsed->size(); ++step)
+        {
+            for (IterationIndex_t iteration : (*preparsed)[step])
+            {
+                res.emplace(iteration);
+                // If an Iteration is found in multiple steps, this logic will
+                // prefer the Iteration from the later step.
+                series.m_snapshotToStep[iteration] = step;
+            }
+        }
+        std::cout.flush();
+        return vec_t{res.begin(), res.end()};
+    }
+    else
     {
         auto const &attribute = series.iterations.getAttribute("snapshot");
         auto res = attribute.getOptional<vec_t>();
@@ -3256,10 +3374,6 @@ auto Series::currentSnapshot() const
                 {},
                 s.str());
         }
-    }
-    else
-    {
-        return std::optional<std::vector<uint64_t>>{};
     }
 }
 
@@ -3292,6 +3406,85 @@ AbstractIOHandler const *Series::IOHandler() const
 {
     auto res = Attributable::IOHandler();
     return res;
+}
+
+auto Series::preparseSnapshots()
+    -> std::optional<std::vector<std::vector<IterationIndex_t>>>
+{
+    using vec_t = std::vector<IterationIndex_t>;
+    auto &series = get();
+    if (!series.m_snapshotToStep.empty())
+    {
+        throw error::Internal(
+            "Control flow error: This is an expensive operation and should be "
+            "called only once upon initialization.");
+    }
+    auto io_handler = IOHandler();
+    if (!series.iterations.containsAttribute("snapshot"))
+    {
+        return std::nullopt;
+    }
+    Parameter<Operation::READ_ATT_ALLSTEPS> readAttr;
+    readAttr.name = "snapshot";
+    io_handler->enqueue(IOTask(&series.iterations, readAttr));
+    io_handler->flush(internal::defaultFlushParams);
+    auto wrong_datatype = [&]() {
+        std::stringstream s;
+        s << "Unexpected datatype for '/data/snapshot': " << *readAttr.dtype
+          << " (expected a vector of integer).";
+        return error::ReadError(
+            error::AffectedObject::Attribute,
+            error::Reason::UnexpectedContent,
+            {},
+            s.str());
+    };
+    return std::visit(
+        [&](auto &vec) -> std::vector<vec_t> {
+            using containedType =
+                typename std::decay_t<decltype(vec)>::value_type;
+            if constexpr (std::is_same_v<containedType, bool>)
+            {
+                // need to keep the vector<bool> overload away from the
+                // below implementation
+                throw wrong_datatype();
+            }
+            else
+            {
+                std::vector<vec_t> res;
+                res.reserve(vec.size());
+                for (auto const &val : vec)
+                {
+                    auto converted =
+                        detail::doConvertOptional<containedType, vec_t>(&val);
+                    if (!converted.has_value())
+                    {
+                        throw wrong_datatype();
+                    }
+                    res.emplace_back(*converted);
+                }
+                return res;
+            }
+        },
+        *readAttr.resource);
+}
+
+bool Series::randomAccessSteps() const
+{
+    auto randomAccess = [](Access access) {
+        switch (access)
+        {
+        case Access::READ_RANDOM_ACCESS:
+        case Access::READ_WRITE:
+            return true;
+        case Access::READ_LINEAR:
+        case Access::CREATE:
+        case Access::APPEND:
+            return false;
+        }
+        return false;
+    };
+    return iterationEncoding() == IterationEncoding::variableBased &&
+        randomAccess(IOHandler()->m_backendAccess);
 }
 
 namespace

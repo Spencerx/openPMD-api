@@ -23,6 +23,7 @@
 #include "openPMD/Error.hpp"
 #include "openPMD/IO/ADIOS/ADIOS2Auxiliary.hpp"
 #include "openPMD/IO/ADIOS/ADIOS2FilePosition.hpp"
+#include "openPMD/IO/ADIOS/macros.hpp"
 #include "openPMD/IO/AbstractIOHandler.hpp"
 #include "openPMD/IO/AbstractIOHandlerImpl.hpp"
 #include "openPMD/IO/AbstractIOHandlerImplCommon.hpp"
@@ -189,6 +190,9 @@ public:
     getBufferView(Writable *, Parameter<Operation::GET_BUFFER_VIEW> &) override;
 
     void readAttribute(Writable *, Parameter<Operation::READ_ATT> &) override;
+
+    void readAttributeAllsteps(
+        Writable *, Parameter<Operation::READ_ATT_ALLSTEPS> &) override;
 
     void listPaths(Writable *, Parameter<Operation::LIST_PATHS> &) override;
 
@@ -431,7 +435,8 @@ private:
         Offset const &offset,
         Extent const &extent,
         adios2::IO &IO,
-        std::string const &varName)
+        std::string const &varName,
+        std::optional<size_t> stepSelection)
     {
         {
             auto requiredType = adios2::GetType<T>();
@@ -457,6 +462,10 @@ private:
 
             throw std::runtime_error(
                 "[ADIOS2] Internal error: Failed opening ADIOS2 variable.");
+        }
+        if (stepSelection.has_value())
+        {
+            var.SetStepSelection({*stepSelection, 1});
         }
         // TODO leave this check to ADIOS?
         adios2::Dims shape = var.Shape();
@@ -533,11 +542,8 @@ namespace detail
     struct AttributeReader
     {
         template <typename T>
-        static Datatype call(
-            ADIOS2IOHandlerImpl &,
-            adios2::IO &IO,
-            std::string name,
-            Attribute::resource &resource);
+        static Datatype
+        call(adios2::IO &IO, std::string name, Attribute::resource &resource);
 
         template <int n, typename... Params>
         static Datatype call(Params &&...);
@@ -562,7 +568,8 @@ namespace detail
             ADIOS2IOHandlerImpl *impl,
             InvalidatableFile const &,
             std::string const &varName,
-            Parameter<Operation::OPEN_DATASET> &parameters);
+            Parameter<Operation::OPEN_DATASET> &parameters,
+            std::optional<size_t> stepSelection);
 
         static constexpr char const *errorMsg = "ADIOS2: openDataset()";
     };
@@ -852,6 +859,11 @@ public:
     std::string backendName() const override
     {
         return "ADIOS2";
+    }
+
+    bool fullSupportForVariableBasedEncoding() const override
+    {
+        return true;
     }
 
     std::future<void> flush(internal::ParsedFlushParams &) override;

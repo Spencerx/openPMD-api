@@ -787,6 +787,15 @@ if(openPMD_BUILD_TESTING)
                 test/Files_SerialIO/close_and_reopen_test.cpp
                 test/Files_SerialIO/filebased_write_test.cpp
             )
+        elseif(${test_name} STREQUAL "ParallelIO" AND openPMD_HAVE_MPI)
+            list(APPEND ${out_list}
+                test/Files_ParallelIO/read_variablebased_randomaccess.cpp
+                test/Files_ParallelIO/iterate_nonstreaming_series.cpp
+            )
+        elseif(${test_name} STREQUAL "Core")
+            list(APPEND ${out_list}
+                test/Files_Core/automatic_variable_encoding.cpp
+            )
         endif()
     endmacro()
 

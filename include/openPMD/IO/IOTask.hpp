@@ -26,13 +26,14 @@
 #include "openPMD/Streaming.hpp"
 #include "openPMD/auxiliary/Export.hpp"
 #include "openPMD/auxiliary/Memory.hpp"
+#include "openPMD/auxiliary/TypeTraits.hpp"
 #include "openPMD/auxiliary/Variant.hpp"
 #include "openPMD/backend/Attribute.hpp"
 #include "openPMD/backend/ParsePreference.hpp"
 
 #include <cstddef>
-#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -72,6 +73,7 @@ OPENPMDAPI_EXPORT_ENUM_CLASS(Operation){
     DELETE_ATT,
     WRITE_ATT,
     READ_ATT,
+    READ_ATT_ALLSTEPS,
     LIST_ATTS,
 
     ADVANCE,
@@ -603,6 +605,38 @@ struct OPENPMDAPI_EXPORT Parameter<Operation::READ_ATT>
 };
 
 template <>
+struct OPENPMDAPI_EXPORT Parameter<Operation::READ_ATT_ALLSTEPS>
+    : public AbstractParameter
+{
+    Parameter() = default;
+    Parameter(Parameter &&) = default;
+    Parameter(Parameter const &) = default;
+    Parameter &operator=(Parameter &&) = default;
+    Parameter &operator=(Parameter const &) = default;
+
+    std::unique_ptr<AbstractParameter> to_heap() && override
+    {
+        return std::unique_ptr<AbstractParameter>(
+            new Parameter<Operation::READ_ATT_ALLSTEPS>(std::move(*this)));
+    }
+
+    std::string name = "";
+    std::shared_ptr<Datatype> dtype = std::make_shared<Datatype>();
+
+    struct to_vector_type
+    {
+        template <typename T>
+        using type = std::vector<T>;
+    };
+    // std::variant<std::vector<T_1>, std::vector<T_2>, ...>
+    // for all T_i in openPMD::Datatype.
+    using result_type = typename auxiliary::detail::
+        map_variant<to_vector_type, Attribute::resource>::type;
+
+    std::shared_ptr<result_type> resource = std::make_shared<result_type>();
+};
+
+template <>
 struct OPENPMDAPI_EXPORT Parameter<Operation::LIST_ATTS>
     : public AbstractParameter
 {
@@ -638,10 +672,23 @@ struct OPENPMDAPI_EXPORT Parameter<Operation::ADVANCE>
             new Parameter<Operation::ADVANCE>(std::move(*this)));
     }
 
-    //! input parameter
-    AdvanceMode mode;
+    struct StepSelection
+    {
+        std::optional<size_t> step;
+    };
+
+    // input parameters
+    /**
+     * AdvanceMode: Is one of BeginStep/EndStep. Used during writing and in
+     *      linear read mode to step sequentially through steps.
+     * StepSelection: Used in random-access read mode, jump to the specified
+     *      step. Can be nullopt in order to reset the backend to read
+     *      step-agnostically, e.g. for reading global datasets such as
+     *      /rankTable.
+     */
+    std::variant<AdvanceMode, StepSelection> mode;
     bool isThisStepMandatory = false;
-    //! output parameter
+    // output parameter
     std::shared_ptr<AdvanceStatus> status =
         std::make_shared<AdvanceStatus>(AdvanceStatus::OK);
 };

@@ -27,20 +27,25 @@
 #include "openPMD/IO/ADIOS/ADIOS2Auxiliary.hpp"
 #include "openPMD/IO/ADIOS/ADIOS2FilePosition.hpp"
 #include "openPMD/IO/ADIOS/ADIOS2IOHandler.hpp"
+#include "openPMD/IO/IOTask.hpp"
 #include "openPMD/IterationEncoding.hpp"
+#include "openPMD/Streaming.hpp"
+#include "openPMD/ThrowError.hpp"
 #include "openPMD/auxiliary/Environment.hpp"
 #include "openPMD/auxiliary/Filesystem.hpp"
 #include "openPMD/auxiliary/JSON_internal.hpp"
 #include "openPMD/auxiliary/Mpi.hpp"
 #include "openPMD/auxiliary/StringManip.hpp"
 #include "openPMD/auxiliary/TypeTraits.hpp"
+#include "openPMD/auxiliary/Variant.hpp"
 
 #include <algorithm>
-#include <cctype> // std::tolower
 #include <cstddef>
+#include <deque>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -84,6 +89,17 @@ std::optional<size_t> joinedDimension(adios2::Dims const &dims)
 }
 
 #if openPMD_HAVE_MPI
+
+#define MPI_CHECK(cmd)                                                         \
+    do                                                                         \
+    {                                                                          \
+        int error = cmd;                                                       \
+        if (error != MPI_SUCCESS)                                              \
+        {                                                                      \
+            std::cerr << "<" << __FILE__ << ">:" << __LINE__;                  \
+            throw std::runtime_error(std::string("[MPI] Error"));              \
+        }                                                                      \
+    } while (false);
 
 ADIOS2IOHandlerImpl::ADIOS2IOHandlerImpl(
     AbstractIOHandler *handler,
@@ -642,13 +658,9 @@ void ADIOS2IOHandlerImpl::createFile(
             m_writeAttributesFromThisRank &&
             m_handler->m_encoding == IterationEncoding::groupBased)
         {
-            // For a peaceful phase-out of group-based encoding in ADIOS2,
-            // print this warning only in the new layout (with group table)
-            if (m_useGroupTable.value_or(UseGroupTable::No) ==
-                    UseGroupTable::Yes &&
-                (m_engineType == "bp5" ||
-                 (m_engineType == "file" || m_engineType == "filestream" ||
-                  m_engineType == "bp")))
+            if (m_engineType == "bp5" ||
+                (m_engineType == "file" || m_engineType == "filestream" ||
+                 m_engineType == "bp"))
             {
                 std::cerr << warningADIOS2NoGroupbasedEncoding << std::endl;
                 printedWarningsAlready.noGroupBased = true;
@@ -995,7 +1007,12 @@ void ADIOS2IOHandlerImpl::openDataset(
     *parameters.dtype =
         detail::fromADIOS2Type(fileData.m_IO.VariableType(varName));
     switchAdios2VariableType<detail::DatasetOpener>(
-        *parameters.dtype, this, file, varName, parameters);
+        *parameters.dtype,
+        this,
+        file,
+        varName,
+        parameters,
+        fileData.stepSelection());
     writable->written = true;
 }
 
@@ -1080,7 +1097,7 @@ namespace detail
             auto &IO = ba.m_IO;
             auto &engine = ba.getEngine();
             adios2::Variable<T> variable = impl->verifyDataset<T>(
-                params.offset, params.extent, IO, varName);
+                params.offset, params.extent, IO, varName, std::nullopt);
             adios2::Dims offset(params.offset.begin(), params.offset.end());
             adios2::Dims extent(params.extent.begin(), params.extent.end());
             variable.SetSelection({std::move(offset), std::move(extent)});
@@ -1216,8 +1233,350 @@ void ADIOS2IOHandlerImpl::readAttribute(
     }
 
     Datatype ret = switchType<detail::AttributeReader>(
-        type, *this, ba.m_IO, name, *parameters.resource);
+        type, ba.m_IO, name, *parameters.resource);
     *parameters.dtype = ret;
+}
+
+namespace
+{
+    /* Used by both readAttribute() and readAttributeAllsteps() tasks.
+       Functor fun will be called with the value of the retrieved attribute;
+       both functions use different logic for processing the retrieved values.
+     */
+    template <typename T, typename Functor>
+    Datatype
+    genericReadAttribute(Functor &&fun, adios2::IO &IO, std::string const &name)
+    {
+        /*
+         * If we store an attribute of boolean type, we store an additional
+         * attribute prefixed with '__is_boolean__' to indicate this information
+         * that would otherwise be lost. Check whether this has been done.
+         */
+        using rep = detail::AttributeTypes<bool>::rep;
+
+        if constexpr (std::is_same<T, rep>::value)
+        {
+            auto attr = IO.InquireAttribute<rep>(name);
+            if (!attr)
+            {
+                throw std::runtime_error(
+                    "[ADIOS2] Internal error: Failed reading attribute '" +
+                    name + "'.");
+            }
+
+            std::string metaAttr;
+            metaAttr = adios_defaults::str_isBoolean + name;
+            /*
+             * In verbose mode, attributeInfo will yield a warning if not
+             * finding the requested attribute. Since we expect the attribute
+             * not to be present in many cases (i.e. when it is actually not
+             * a boolean), let's tell attributeInfo to be quiet.
+             */
+            auto type = detail::attributeInfo(
+                IO,
+                metaAttr,
+                /* verbose = */ false);
+
+            if (type == determineDatatype<rep>())
+            {
+                auto meta = IO.InquireAttribute<rep>(metaAttr);
+                if (meta.Data().size() == 1 && meta.Data()[0] == 1)
+                {
+                    std::forward<Functor>(fun)(
+                        detail::bool_repr::fromRep(attr.Data()[0]));
+                    return determineDatatype<bool>();
+                }
+            }
+            std::forward<Functor>(fun)(attr.Data()[0]);
+        }
+        else if constexpr (detail::IsUnsupportedComplex_v<T>)
+        {
+            throw std::runtime_error(
+                "[ADIOS2] Internal error: no support for long double complex "
+                "attribute types");
+        }
+        else if constexpr (auxiliary::IsVector_v<T>)
+        {
+            auto attr = IO.InquireAttribute<typename T::value_type>(name);
+            if (!attr)
+            {
+                throw std::runtime_error(
+                    "[ADIOS2] Internal error: Failed reading attribute '" +
+                    name + "'.");
+            }
+            std::forward<Functor>(fun)(attr.Data());
+        }
+        else if constexpr (auxiliary::IsArray_v<T>)
+        {
+            auto attr = IO.InquireAttribute<typename T::value_type>(name);
+            if (!attr)
+            {
+                throw std::runtime_error(
+                    "[ADIOS2] Internal error: Failed reading attribute '" +
+                    name + "'.");
+            }
+            auto data = attr.Data();
+            T res;
+            for (size_t i = 0; i < data.size(); i++)
+            {
+                res[i] = data[i];
+            }
+            std::forward<Functor>(fun)(std::move(res));
+        }
+        else if constexpr (std::is_same_v<T, bool>)
+        {
+            throw std::runtime_error(
+                "Observed boolean attribute. ADIOS2 does not have these?");
+        }
+        else
+        {
+            auto attr = IO.InquireAttribute<T>(name);
+            if (!attr)
+            {
+                throw std::runtime_error(
+                    "[ADIOS2] Internal error: Failed reading attribute '" +
+                    name + "'.");
+            }
+            std::forward<Functor>(fun)(attr.Data()[0]);
+        }
+
+        return determineDatatype<T>();
+    }
+
+    struct ReadAttributeAllsteps
+    {
+        template <typename T>
+        static void call(
+            adios2::IO &IO,
+            adios2::Engine &engine,
+            std::string const &name,
+            adios2::StepStatus status,
+            Parameter<Operation::READ_ATT_ALLSTEPS>::result_type
+                &put_result_here)
+        {
+            std::vector<T> res;
+            res.reserve(engine.Steps());
+            while (status == adios2::StepStatus::OK)
+            {
+                genericReadAttribute<T>(
+                    [&res](auto &&val) {
+                        using type = std::remove_reference_t<decltype(val)>;
+                        if constexpr (std::is_same_v<type, bool>)
+                        {
+                            throw error::ReadError(
+                                error::AffectedObject::Attribute,
+                                error::Reason::UnexpectedContent,
+                                "ADIOS2",
+                                "[ReadAttributeAllsteps] No support for "
+                                "Boolean attributes.");
+                        }
+                        else
+                        {
+                            res.emplace_back(static_cast<decltype(val)>(val));
+                        }
+                    },
+                    IO,
+                    name);
+                engine.EndStep();
+                status = engine.BeginStep();
+            }
+            switch (status)
+            {
+            case adios2::StepStatus::OK:
+                throw error::Internal("Control flow error.");
+            case adios2::StepStatus::NotReady:
+            case adios2::StepStatus::OtherError:
+                throw error::ReadError(
+                    error::AffectedObject::File,
+                    error::Reason::CannotRead,
+                    "ADIOS2",
+                    "Unexpected step status while preparsing snapshots.");
+            case adios2::StepStatus::EndOfStream:
+                break;
+            }
+            put_result_here = std::move(res);
+        }
+
+        static constexpr char const *errorMsg = "ReadAttributeAllsteps";
+    };
+
+#if openPMD_HAVE_MPI
+    struct DistributeToAllRanks
+    {
+        template <typename T>
+        static void call(
+            Parameter<Operation::READ_ATT_ALLSTEPS>::result_type
+                &put_result_here_in,
+            MPI_Comm comm,
+            int rank)
+        {
+            if (rank != 0)
+            {
+                put_result_here_in = std::vector<T>{};
+            }
+            std::vector<T> &put_result_here =
+                std::get<std::vector<T>>(put_result_here_in);
+            size_t num_items = put_result_here.size();
+            MPI_CHECK(MPI_Bcast(
+                &num_items, 1, auxiliary::openPMD_MPI_type<size_t>(), 0, comm));
+            if constexpr (
+                std::is_same_v<T, std::string> ||
+                std::is_same_v<T, std::vector<std::string>> ||
+                std::is_same_v<T, bool> ||
+                std::is_same_v<T, std::vector<bool>> ||
+                auxiliary::IsArray_v<T> || isComplexFloatingPoint<T>())
+            {
+                throw error::OperationUnsupportedInBackend(
+                    "ADIOS2",
+                    "[readAttributeAllsteps] No support for attributes of type "
+                    "std::string, bool, std::complex or std::array in "
+                    "parallel.");
+            }
+            else if constexpr (
+                // auxiliary::IsArray_v<T> ||
+                auxiliary::IsVector_v<T>)
+            {
+                std::vector<size_t> sizes;
+                sizes.reserve(num_items);
+                if (rank == 0)
+                {
+                    std::transform(
+                        put_result_here.begin(),
+                        put_result_here.end(),
+                        std::back_inserter(sizes),
+                        [](T const &arr) { return arr.size(); });
+                }
+                sizes.resize(num_items);
+                MPI_CHECK(MPI_Bcast(
+                    sizes.data(),
+                    num_items,
+                    auxiliary::openPMD_MPI_type<size_t>(),
+                    0,
+                    comm));
+                size_t total_flat_size =
+                    std::accumulate(sizes.begin(), sizes.end(), size_t(0));
+                using flat_type = typename T::value_type;
+                std::vector<flat_type> flat_vector;
+                flat_vector.reserve(total_flat_size);
+                if (rank == 0)
+                {
+                    for (auto const &arr : put_result_here)
+                    {
+                        for (auto val : arr)
+                        {
+                            flat_vector.push_back(val);
+                        }
+                    }
+                }
+                flat_vector.resize(total_flat_size);
+                MPI_CHECK(MPI_Bcast(
+                    flat_vector.data(),
+                    total_flat_size,
+                    auxiliary::openPMD_MPI_type<flat_type>(),
+                    0,
+                    comm));
+                if (rank != 0)
+                {
+                    size_t offset = 0;
+                    put_result_here.reserve(num_items);
+                    for (size_t current_extent : sizes)
+                    {
+                        put_result_here.emplace_back(
+                            flat_vector.begin() + offset,
+                            flat_vector.begin() + offset + current_extent);
+                        offset += current_extent;
+                    }
+                }
+            }
+            else
+            {
+                std::vector<T> receive;
+                if (rank != 0)
+                {
+                    receive.resize(num_items);
+                }
+                MPI_CHECK(MPI_Bcast(
+                    rank == 0 ? put_result_here.data() : receive.data(),
+                    num_items,
+                    auxiliary::openPMD_MPI_type<T>(),
+                    0,
+                    comm));
+                if (rank != 0)
+                {
+                    put_result_here = std::move(receive);
+                }
+            }
+        }
+        static constexpr char const *errorMsg = "DistributeToAllRanks";
+    };
+#endif
+
+    void warn_ignored_modifiable_attributes(adios2::IO &IO)
+    {
+        auto modifiable_flag = IO.InquireAttribute<detail::bool_representation>(
+            adios_defaults::str_useModifiableAttributes);
+        auto print_warning = [](std::string const &note) {
+            std::cerr << "Warning: " << note << R"(
+Random-access for variable-encoding in ADIOS2 is currently
+experimental. Support for modifiable attributes is currently not implemented
+yet, meaning that attributes such as /data/time will show useless values.
+Use Access::READ_LINEAR to retrieve those values if needed.
+The following modifiable attributes have been found:
+)";
+        };
+        if (!modifiable_flag)
+        {
+            print_warning("File might be using modifiable attributes.");
+        }
+        else if (modifiable_flag.Data().at(0) != 0)
+        {
+            print_warning("File uses modifiable attributes.");
+        }
+    }
+} // namespace
+
+void ADIOS2IOHandlerImpl::readAttributeAllsteps(
+    Writable *writable, Parameter<Operation::READ_ATT_ALLSTEPS> &param)
+{
+    auto file = refreshFileFromParent(writable, /* preferParentFile = */ false);
+    auto pos = setAndGetFilePosition(writable);
+    auto name = nameOfAttribute(writable, param.name);
+
+    auto read_from_file_in_serial = [&]() {
+        adios2::ADIOS adios;
+        auto IO = adios.DeclareIO("PreparseSnapshots");
+        // @todo check engine type
+        IO.SetEngine(realEngineType());
+        IO.SetParameter("StreamReader", "ON"); // this be for BP4
+        auto engine = IO.Open(fullPath(*file), adios2::Mode::Read);
+        auto status = engine.BeginStep();
+        warn_ignored_modifiable_attributes(IO);
+        auto type = detail::attributeInfo(IO, name, /* verbose = */ true);
+        switchType<ReadAttributeAllsteps>(
+            type, IO, engine, name, status, *param.resource);
+        engine.Close();
+        return type;
+    };
+#if openPMD_HAVE_MPI
+    if (!m_communicator.has_value())
+    {
+        read_from_file_in_serial();
+        return;
+    }
+    int rank, size;
+    MPI_Comm_rank(*m_communicator, &rank);
+    MPI_Comm_size(*m_communicator, &size);
+    Datatype type;
+    if (rank == 0)
+    {
+        type = read_from_file_in_serial();
+    }
+    MPI_CHECK(MPI_Bcast(&type, 1, MPI_INT, 0, *m_communicator));
+    switchType<DistributeToAllRanks>(
+        type, *param.resource, *m_communicator, rank);
+#else
+    read_from_file_in_serial();
+#endif
 }
 
 void ADIOS2IOHandlerImpl::listPaths(
@@ -1425,7 +1784,14 @@ void ADIOS2IOHandlerImpl::advance(
 {
     auto file = m_files.at(writable);
     auto &ba = getFileData(file, IfFileNotOpen::ThrowError);
-    *parameters.status = ba.advance(parameters.mode);
+    std::visit(
+        auxiliary::overloaded{
+            [&](AdvanceMode mode) { *parameters.status = ba.advance(mode); },
+            [&](Parameter<Operation::ADVANCE>::StepSelection step) {
+                ba.setStepSelection(step.step);
+                *parameters.status = AdvanceStatus::RANDOMACCESS;
+            }},
+        parameters.mode);
 }
 
 void ADIOS2IOHandlerImpl::closePath(
@@ -1745,105 +2111,14 @@ namespace detail
 {
     template <typename T>
     Datatype AttributeReader::call(
-        ADIOS2IOHandlerImpl &impl,
-        adios2::IO &IO,
-        std::string name,
-        Attribute::resource &resource)
+        adios2::IO &IO, std::string name, Attribute::resource &resource)
     {
-        (void)impl;
-        /*
-         * If we store an attribute of boolean type, we store an additional
-         * attribute prefixed with '__is_boolean__' to indicate this information
-         * that would otherwise be lost. Check whether this has been done.
-         */
-        using rep = AttributeTypes<bool>::rep;
-
-        if constexpr (std::is_same<T, rep>::value)
-        {
-            auto attr = IO.InquireAttribute<rep>(name);
-            if (!attr)
-            {
-                throw std::runtime_error(
-                    "[ADIOS2] Internal error: Failed reading attribute '" +
-                    name + "'.");
-            }
-
-            std::string metaAttr;
-            metaAttr = adios_defaults::str_isBoolean + name;
-            /*
-             * In verbose mode, attributeInfo will yield a warning if not
-             * finding the requested attribute. Since we expect the attribute
-             * not to be present in many cases (i.e. when it is actually not
-             * a boolean), let's tell attributeInfo to be quiet.
-             */
-            auto type = attributeInfo(
-                IO,
-                metaAttr,
-                /* verbose = */ false);
-
-            if (type == determineDatatype<rep>())
-            {
-                auto meta = IO.InquireAttribute<rep>(metaAttr);
-                if (meta.Data().size() == 1 && meta.Data()[0] == 1)
-                {
-                    resource = bool_repr::fromRep(attr.Data()[0]);
-                    return determineDatatype<bool>();
-                }
-            }
-            resource = attr.Data()[0];
-        }
-        else if constexpr (IsUnsupportedComplex_v<T>)
-        {
-            throw std::runtime_error(
-                "[ADIOS2] Internal error: no support for long double complex "
-                "attribute types");
-        }
-        else if constexpr (auxiliary::IsVector_v<T>)
-        {
-            auto attr = IO.InquireAttribute<typename T::value_type>(name);
-            if (!attr)
-            {
-                throw std::runtime_error(
-                    "[ADIOS2] Internal error: Failed reading attribute '" +
-                    name + "'.");
-            }
-            resource = attr.Data();
-        }
-        else if constexpr (auxiliary::IsArray_v<T>)
-        {
-            auto attr = IO.InquireAttribute<typename T::value_type>(name);
-            if (!attr)
-            {
-                throw std::runtime_error(
-                    "[ADIOS2] Internal error: Failed reading attribute '" +
-                    name + "'.");
-            }
-            auto data = attr.Data();
-            T res;
-            for (size_t i = 0; i < data.size(); i++)
-            {
-                res[i] = data[i];
-            }
-            resource = res;
-        }
-        else if constexpr (std::is_same_v<T, bool>)
-        {
-            throw std::runtime_error(
-                "Observed boolean attribute. ADIOS2 does not have these?");
-        }
-        else
-        {
-            auto attr = IO.InquireAttribute<T>(name);
-            if (!attr)
-            {
-                throw std::runtime_error(
-                    "[ADIOS2] Internal error: Failed reading attribute '" +
-                    name + "'.");
-            }
-            resource = attr.Data()[0];
-        }
-
-        return determineDatatype<T>();
+        return genericReadAttribute<T>(
+            [&resource](auto &&value) {
+                resource = static_cast<decltype(value)>(value);
+            },
+            IO,
+            name);
     }
 
     template <int n, typename... Params>
@@ -2004,12 +2279,42 @@ namespace detail
         ADIOS2IOHandlerImpl *impl,
         InvalidatableFile const &file,
         const std::string &varName,
-        Parameter<Operation::OPEN_DATASET> &parameters)
+        Parameter<Operation::OPEN_DATASET> &parameters,
+        std::optional<size_t> stepSelection)
     {
         auto &fileData = impl->getFileData(
             file, ADIOS2IOHandlerImpl::IfFileNotOpen::ThrowError);
         auto &IO = fileData.m_IO;
         adios2::Variable<T> var = IO.InquireVariable<T>(varName);
+
+        if (fileData.stepSelection().has_value())
+        {
+            auto file_steps = fileData.getEngine().Steps();
+            auto var_steps = var.Steps();
+            if (file_steps != var_steps)
+            {
+                throw error::ReadError(
+                    error::AffectedObject::Dataset,
+                    error::Reason::UnexpectedContent,
+                    "ADIOS2",
+                    &R"(
+The opened file contains different data per step.
+When using variable-based encoding, such files must be opened in linear read
+mode, since random-access mode cannot easily associate variable steps
+to iterations under these circumstances (yet).
+If random-access read mode is required, file-based iteration encoding is more
+useful for such data in ADIOS2. You may use the openpmd-pipe command line tool
+for converting from variable-based to file-based iteration encoding.
+ERROR: Variable ')"[1] + varName +
+                        "' has " + std::to_string(var_steps) +
+                        " step(s), but the file has " +
+                        std::to_string(file_steps) + " step(s).");
+            }
+        }
+        if (stepSelection.has_value())
+        {
+            var.SetStepSelection({*stepSelection, 1});
+        }
         if (!var)
         {
             throw std::runtime_error(

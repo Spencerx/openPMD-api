@@ -1,6 +1,8 @@
 /* Running this test in parallel with MPI requires MPI::Init.
  * To guarantee a correct call to Init, launch the tests manually.
  */
+#include "Files_ParallelIO/ParallelIOTests.hpp"
+
 #include "openPMD/IO/ADIOS/macros.hpp"
 #include "openPMD/IO/Access.hpp"
 #include "openPMD/auxiliary/Environment.hpp"
@@ -8,7 +10,12 @@
 #include "openPMD/openPMD.hpp"
 #include <catch2/catch.hpp>
 
-#if openPMD_HAVE_MPI
+#if !openPMD_HAVE_MPI
+TEST_CASE("none", "[parallel]")
+{}
+
+#else
+
 #include <mpi.h>
 
 #if openPMD_HAVE_ADIOS2
@@ -32,42 +39,6 @@
 
 using namespace openPMD;
 
-std::vector<std::string> getBackends()
-{
-    // first component: backend file ending
-    // second component: whether to test 128 bit values
-    std::vector<std::string> res;
-#if openPMD_HAVE_ADIOS2
-    res.emplace_back("bp");
-#endif
-#if openPMD_HAVE_HDF5
-    res.emplace_back("h5");
-#endif
-    return res;
-}
-
-auto const backends = getBackends();
-
-std::vector<std::string> testedFileExtensions()
-{
-    auto allExtensions = getFileExtensions();
-    auto newEnd = std::remove_if(
-        allExtensions.begin(), allExtensions.end(), [](std::string const &ext) {
-            // sst and ssc need a receiver for testing
-            // bp4 is already tested via bp
-            return ext == "sst" || ext == "ssc" || ext == "bp4" ||
-                ext == "toml" || ext == "json";
-        });
-    return {allExtensions.begin(), newEnd};
-}
-
-#else
-
-TEST_CASE("none", "[parallel]")
-{}
-#endif
-
-#if openPMD_HAVE_MPI
 TEST_CASE("parallel_multi_series_test", "[parallel]")
 {
     std::list<Series> allSeries;
@@ -86,7 +57,8 @@ TEST_CASE("parallel_multi_series_test", "[parallel]")
                     .append(".")
                     .append(file_ending),
                 Access::CREATE,
-                MPI_COMM_WORLD);
+                MPI_COMM_WORLD,
+                R"(iteration_encoding = "variable_based")");
             allSeries.back().iterations[sn].setAttribute("wululu", sn);
             allSeries.back().flush();
         }
@@ -139,7 +111,7 @@ void write_test_zero_extent(
 
     for (int step = 0; step <= max_step; step += 20)
     {
-        Iteration it = o.iterations[step];
+        Iteration it = o.writeIterations()[step];
         it.setAttribute("yolo", "yo");
 
         if (rank != 0 || declareFromAll)
@@ -496,7 +468,7 @@ void extendDataset(std::string const &ext, std::string const &jsonConfig)
 
         // array record component -> array record component
         // should work
-        auto E_x = write.iterations[0].meshes["E"]["x"];
+        auto E_x = write.writeIterations()[0].meshes["E"]["x"];
         E_x.resetDataset(ds1);
         E_x.storeChunk(data1, {mpi_rank, 0}, {1, 25});
         write.flush();
@@ -702,7 +674,7 @@ void write_4D_test(std::string const &file_ending)
     std::string name = "../samples/parallel_write_4d." + file_ending;
     Series o = Series(name, Access::CREATE, MPI_COMM_WORLD);
 
-    auto it = o.iterations[1];
+    auto it = o.writeIterations()[1];
     auto E_x = it.meshes["E"]["x"];
 
     // every rank out of mpi_size MPI ranks contributes two writes:
@@ -737,7 +709,7 @@ void write_makeconst_some(std::string const &file_ending)
     std::cout << name << std::endl;
     Series o = Series(name, Access::CREATE, MPI_COMM_WORLD);
 
-    auto it = o.iterations[1];
+    auto it = o.writeIterations()[1];
     // I would have expected we need this, since the first call that writes
     // data below (makeConstant) is not executed in MPI collective manner
     // it.open();
@@ -1167,7 +1139,7 @@ TEST_CASE("independent_write_with_collective_flush", "[parallel]")
     int size, rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    auto iteration = write.iterations[0];
+    auto iteration = write.writeIterations()[0];
     auto E_x = iteration.meshes["E"]["x"];
     E_x.resetDataset({Datatype::DOUBLE, {10}});
     write.flush();
@@ -1211,7 +1183,10 @@ void adios2_streaming(bool variableBasedLayout)
         Series writeSeries(
             "../samples/adios2_stream.sst",
             Access::CREATE,
-            "adios2.engine.type = \"sst\"");
+            variableBasedLayout
+                ? "adios2.engine.type = \"sst\""
+                : "adios2.engine.type = \"sst\"\niteration_encoding = "
+                  "\"group_based\"");
         if (variableBasedLayout)
         {
             writeSeries.setIterationEncoding(IterationEncoding::variableBased);
@@ -2196,5 +2171,15 @@ TEST_CASE("adios2_flush_via_step")
 #endif
 }
 #endif
+
+TEST_CASE("read_variablebased_randomaccess")
+{
+    read_variablebased_randomaccess::read_variablebased_randomaccess();
+}
+
+TEST_CASE("iterate_nonstreaming_series", "[serial][adios2]")
+{
+    iterate_nonstreaming_series::iterate_nonstreaming_series();
+}
 
 #endif // openPMD_HAVE_ADIOS2 && openPMD_HAVE_MPI

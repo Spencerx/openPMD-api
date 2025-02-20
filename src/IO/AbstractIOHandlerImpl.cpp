@@ -21,13 +21,18 @@
 
 #include "openPMD/IO/AbstractIOHandlerImpl.hpp"
 
+#include "openPMD/IO/IOTask.hpp"
+#include "openPMD/Streaming.hpp"
 #include "openPMD/auxiliary/Environment.hpp"
+#include "openPMD/auxiliary/Variant.hpp"
+#include "openPMD/backend/Attribute.hpp"
 #include "openPMD/backend/Writable.hpp"
 
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include <variant>
 
 namespace openPMD
 {
@@ -314,7 +319,10 @@ std::future<void> AbstractIOHandlerImpl::flush()
                     i.writable->parent,
                     "->",
                     i.writable,
-                    "] READ_DATASET");
+                    "] READ_DATASET, offset=",
+                    [&parameter]() { return vec_as_string(parameter.offset); },
+                    ", extent=",
+                    [&parameter]() { return vec_as_string(parameter.extent); });
                 readDataset(i.writable, parameter);
                 break;
             }
@@ -342,6 +350,20 @@ std::future<void> AbstractIOHandlerImpl::flush()
                     "] READ_ATT: ",
                     parameter.name);
                 readAttribute(i.writable, parameter);
+                break;
+            }
+            case O::READ_ATT_ALLSTEPS: {
+                auto &parameter =
+                    deref_dynamic_cast<Parameter<O::READ_ATT_ALLSTEPS>>(
+                        i.parameter.get());
+                writeToStderr(
+                    "[",
+                    i.writable->parent,
+                    "->",
+                    i.writable,
+                    "] READ_ATT_ALLSTEPS: ",
+                    parameter.name);
+                readAttributeAllsteps(i.writable, parameter);
                 break;
             }
             case O::LIST_PATHS: {
@@ -383,15 +405,30 @@ std::future<void> AbstractIOHandlerImpl::flush()
                     i.writable,
                     "] ADVANCE ",
                     [&]() {
-                        switch (parameter.mode)
-                        {
+                        return std::visit(
+                            auxiliary::overloaded{
+                                [](AdvanceMode mode) -> std::string {
+                                    switch (mode)
+                                    {
 
-                        case AdvanceMode::BEGINSTEP:
-                            return "BEGINSTEP";
-                        case AdvanceMode::ENDSTEP:
-                            return "ENDSTEP";
-                        }
-                        throw std::runtime_error("Unreachable!");
+                                    case AdvanceMode::BEGINSTEP:
+                                        return "BEGINSTEP";
+                                    case AdvanceMode::ENDSTEP:
+                                        return "ENDSTEP";
+                                    }
+                                    throw std::runtime_error("Unreachable!");
+                                },
+                                [](Parameter<Operation::ADVANCE>::StepSelection
+                                       step) {
+                                    std::stringstream s;
+                                    s << "RANDOMACCESS '"
+                                      << (step.step.has_value()
+                                              ? std::to_string(*step.step)
+                                              : std::string("RESET"))
+                                      << "'";
+                                    return s.str();
+                                }},
+                            parameter.mode);
                     }());
                 advance(i.writable, parameter);
                 break;
@@ -483,6 +520,21 @@ std::future<void> AbstractIOHandlerImpl::flush()
         (*m_handler).m_work.pop();
     }
     return std::future<void>();
+}
+
+void AbstractIOHandlerImpl::readAttributeAllsteps(
+    Writable *w, Parameter<Operation::READ_ATT_ALLSTEPS> &param)
+{
+    using result_type = Parameter<Operation::READ_ATT_ALLSTEPS>::result_type;
+    Parameter<Operation::READ_ATT> param_internal;
+    param_internal.name = param.name;
+    param_internal.dtype = param.dtype;
+    readAttribute(w, param_internal);
+    *param.resource = std::visit(
+        [](auto &val) -> result_type {
+            return result_type{std::vector{std::move(val)}};
+        },
+        *param_internal.resource);
 }
 
 void AbstractIOHandlerImpl::setWritten(

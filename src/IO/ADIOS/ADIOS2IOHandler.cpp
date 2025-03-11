@@ -1079,6 +1079,9 @@ void ADIOS2IOHandlerImpl::readDataset(
     detail::BufferedGet bg;
     bg.name = nameOfVariable(writable);
     bg.param = parameters;
+    // need to store the current step selection for deferred reads as the step
+    // selection might change again before flushing
+    bg.stepSelection = ba.stepSelection();
     ba.enqueue(std::move(bg));
     m_dirty.emplace(std::move(file));
 }
@@ -1521,7 +1524,6 @@ Random-access for variable-encoding in ADIOS2 is currently
 experimental. Support for modifiable attributes is currently not implemented
 yet, meaning that attributes such as /data/time will show useless values.
 Use Access::READ_LINEAR to retrieve those values if needed.
-The following modifiable attributes have been found:
 )";
         };
         if (!modifiable_flag)

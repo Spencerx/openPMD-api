@@ -6,17 +6,21 @@
 #
 spack:
   specs:
-  - adios2
+  - adios2@2.10
   - hdf5
+  - openmpi
 
   packages:
-    hdf5:
-      variants: ~mpi
     adios2:
-      variants: ~mpi ~zfp ~sz ~png ~dataman ~python ~fortran ~ssc ~shared ~bzip2 ~mgard
+      variants: ~zfp ~sz ~png ~dataman ~python ~fortran ~ssc ~shared ~bzip2 ~mgard ~blosc2
     cmake:
       externals:
-      - spec: cmake@3.22.1
+      - spec: cmake@3.31.5
+        prefix: /usr
+      buildable: False
+    openmpi:
+      externals:
+      - spec: openmpi@4.1.2
         prefix: /usr
       buildable: False
     perl:
@@ -26,7 +30,7 @@ spack:
       buildable: False
     python:
       externals:
-      - spec: python@3.11.0
+      - spec: python@3.10.12
         prefix: /usr
       buildable: False
     all:
@@ -34,21 +38,23 @@ spack:
       variants: ~fortran
       providers:
         mpi: [openmpi]
-      compiler: [clang@14.0.0]
+      compiler: [clang@11.1.0]
 
   compilers:
   - compiler:
       environment: {}
       extra_rpaths: []
-      flags: {}
+      flags:
+        cxxflags: -stdlib=libc++
+        ldflags: -stdlib=libc++
       modules: []
       operating_system: ubuntu22.04
       paths:
-        cc: /usr/lib/llvm-14/bin/clang
-        cxx: /usr/lib/llvm-14/bin/clang++
+        cc: /usr/bin/clang-11
+        cxx: /usr/bin/clang++-11
         f77: /usr/bin/gfortran
         fc: /usr/bin/gfortran
-      spec: clang@14.0.0
+      spec: clang@11.1.0
       target: x86_64
 
   config:

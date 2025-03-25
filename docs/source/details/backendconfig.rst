@@ -287,3 +287,78 @@ Explanation of the single keys:
   In "template" mode, only the dataset metadata (type, extent and attributes) are stored and no chunks can be written or read (i.e. write/read operations will be skipped).
 * ``json.attribute.mode`` / ``toml.attribute.mode``: One of ``"long"`` (default in openPMD 1.*) or ``"short"`` (default in openPMD 2.* and generally in TOML).
   The long format explicitly encodes the attribute type in the dataset on disk, the short format only writes the actual attribute as a JSON/TOML value, requiring readers to recover the type.
+
+Dataset-specific configuration
+------------------------------
+
+Sometimes it is beneficial to set configuration options for specific datasets.
+Most dataset-specific configuration options supported by the openPMD-api are additionally backend-specific, being format-specific serialization instructions such as compression or chunking.
+
+All dataset-specific and backend-specific configuration is specified under the key path ``<backend>.dataset``.
+Without filtering by dataset name (see the ``select``` key below) this looks like:
+
+.. code-block:: json
+
+  {
+    "adios2": {
+      "dataset": {
+        "operators": []
+      }
+    },
+    "hdf5": {
+      "dataset": {
+        "chunking": "auto"
+      }
+    }
+  }
+
+Dataset-specific configuration options can be configured in multiple ways:
+
+As part of the general JSON/TOML configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In the simplest case, the dataset configuration is specified without any extra steps as part of the JSON/TOML configuration that is used to initialize the openPMD Series as part of the ``Series`` constructor. This does not allow specifying different configurations per dataset, but sets the default configuration for all datasets.
+
+As a separate JSON/TOML configuration during dataset initialization
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Similarly to the ``Series`` constructor, the ``Dataset`` constructor optionally receives a JSON/TOML configuration, used for setting options specifically only for those datasets initialized with this ``Dataset`` specification. The default given in the ``Series`` constructor will be overridden.
+
+This is the preferred way for configuring dataset-specific options that are *not* backend-specific (currently only ``{"resizable": true}``).
+
+By pattern-matching the dataset names
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The above approach has the disadvantage that it has to be supported explicitly at the level of the downstream application, e.g. a simulation or data reader. As an alternative, the the backend-specific dataset configuration under ``<backend>.dataset`` can also be given as a list of alternatives that are matched against the dataset name in sequence, e.g. ``hdf5.dataset = [<pattern_1>, <pattern_2>, ...]``.
+
+Each such pattern ``<pattern_i>`` is a JSON object with key ``cfg`` and optional key ``select``: ``{"select": <regex>, "cfg": <cfg>}``.
+
+In here, ``<regex>`` is a regex or a list of regexes, of type egrep as defined by the `C++ standard library <https://en.cppreference.com/w/cpp/regex/basic_regex/constants>`__.
+``<cfg>`` is a configuration that will be forwarded as a "regular" dataset configuration to the backend.
+
+.. note::
+
+  To match lists of regular expressions ``select = [REGEX_1, REGEX_2, ..., REGEX_n]``, the list is internally transformed into a single regular expression ``($^)|(REGEX_1)|(REGEX_2)|...|(REGEX_n)``.
+
+In a configuration such as ``hdf5.dataset = [<pattern_1>, <pattern_2>, ...]``, the single patterns will be processed in top-down manner, selecting the first matching pattern found in the list.
+The specified regexes will be matched against the openPMD dataset path either within the Iteration (e.g. ``meshes/E/x`` or ``particles/.*/position/.*``) or within the Series (e.g. ``/data/1/meshes/E/x`` or ``/data/.*/particles/.*/position/.*``), considering full matches only.
+
+.. note::
+
+  The dataset name is determined by the result of ``attributable.myPath().openPMDPath()`` where ``attributable`` is an object in the openPMD hierarchy.
+
+.. note::
+
+  To match against the path within the containing Iteration or within the containing Series, the specified regular expression is internally transformed into ``(/data/[0-9]+/)?(REGEX)`` where ``REGEX`` is the specified pattern, and then matched against the full dataset path.
+
+The **default configuration** is specified by omitting the ``select`` key.
+Specifying more than one default is an error.
+If no pattern matches a dataset, the default configuration is chosen if specified, or an empty JSON object ``{}`` otherwise.
+
+A full example:
+
+.. literalinclude:: openpmd_extended_config.toml
+   :language: toml
+
+.. literalinclude:: openpmd_extended_config.json
+   :language: json

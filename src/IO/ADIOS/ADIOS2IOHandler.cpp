@@ -34,6 +34,7 @@
 #include "openPMD/ThrowError.hpp"
 #include "openPMD/auxiliary/Environment.hpp"
 #include "openPMD/auxiliary/Filesystem.hpp"
+#include "openPMD/auxiliary/JSONMatcher.hpp"
 #include "openPMD/auxiliary/JSON_internal.hpp"
 #include "openPMD/auxiliary/Mpi.hpp"
 #include "openPMD/auxiliary/StringManip.hpp"
@@ -106,7 +107,6 @@ std::optional<size_t> joinedDimension(adios2::Dims const &dims)
 ADIOS2IOHandlerImpl::ADIOS2IOHandlerImpl(
     AbstractIOHandler *handler,
     MPI_Comm communicator,
-    json::TracingJSON cfg,
     std::string engineType,
     std::string specifiedExtension)
     : AbstractIOHandlerImplCommon(handler)
@@ -116,7 +116,7 @@ ADIOS2IOHandlerImpl::ADIOS2IOHandlerImpl(
     , m_userSpecifiedExtension{std::move(specifiedExtension)}
 {
     init(
-        std::move(cfg),
+        handler->jsonMatcher->getDefault("adios2"),
         /* callbackWriteAttributesFromRank = */
         [communicator, this](nlohmann::json const &attribute_writing_ranks) {
             int rank = 0;
@@ -158,7 +158,6 @@ ADIOS2IOHandlerImpl::ADIOS2IOHandlerImpl(
 
 ADIOS2IOHandlerImpl::ADIOS2IOHandlerImpl(
     AbstractIOHandler *handler,
-    json::TracingJSON cfg,
     std::string engineType,
     std::string specifiedExtension)
     : AbstractIOHandlerImplCommon(handler)
@@ -166,7 +165,7 @@ ADIOS2IOHandlerImpl::ADIOS2IOHandlerImpl(
     , m_engineType(std::move(engineType))
     , m_userSpecifiedExtension(std::move(specifiedExtension))
 {
-    init(std::move(cfg), [](auto const &...) {});
+    init(handler->jsonMatcher->getDefault("adios2"), [](auto const &...) {});
 }
 
 ADIOS2IOHandlerImpl::~ADIOS2IOHandlerImpl()
@@ -373,6 +372,35 @@ std::optional<std::vector<ADIOS2IOHandlerImpl::ParameterizedOperator>>
 ADIOS2IOHandlerImpl::getOperators()
 {
     return getOperators(m_config);
+}
+
+template <typename Parameter>
+auto ADIOS2IOHandlerImpl::getDatasetOperators(
+    Parameter const &parameters, Writable *writable, std::string const &varName)
+    -> std::vector<ParameterizedOperator>
+{
+    std::vector<ParameterizedOperator> operators;
+    json::TracingJSON options =
+        parameters.template compileJSONConfig<json::ParsedConfig>(
+            writable, *m_handler->jsonMatcher, "adios2");
+    if (options.json().contains("adios2"))
+    {
+        json::TracingJSON datasetConfig(options["adios2"]);
+        auto datasetOperators = getOperators(datasetConfig);
+
+        operators = datasetOperators ? std::move(datasetOperators.value())
+                                     : defaultOperators;
+    }
+    else
+    {
+        operators = defaultOperators;
+    }
+    parameters.warnUnusedParameters(
+        options,
+        "adios2",
+        "Warning: parts of the backend configuration for ADIOS2 dataset '" +
+            varName + "' remain unused:\n");
+    return operators;
 }
 
 using AcceptedEndingsForEngine = std::map<std::string, std::string>;
@@ -784,26 +812,8 @@ void ADIOS2IOHandlerImpl::createDataset(
         filePos->gd = GroupOrDataset::DATASET;
         auto const varName = nameOfVariable(writable);
 
-        std::vector<ParameterizedOperator> operators;
-        json::TracingJSON options =
-            json::parseOptions(parameters.options, /* considerFiles = */ false);
-        if (options.json().contains("adios2"))
-        {
-            json::TracingJSON datasetConfig(options["adios2"]);
-            auto datasetOperators = getOperators(datasetConfig);
-
-            operators = datasetOperators ? std::move(datasetOperators.value())
-                                         : defaultOperators;
-        }
-        else
-        {
-            operators = defaultOperators;
-        }
-        parameters.warnUnusedParameters(
-            options,
-            "adios2",
-            "Warning: parts of the backend configuration for ADIOS2 dataset '" +
-                varName + "' remain unused:\n");
+        std::vector<ParameterizedOperator> operators =
+            getDatasetOperators(parameters, writable, varName);
 
         // cast from openPMD::Extent to adios2::Dims
         adios2::Dims shape(parameters.extent.begin(), parameters.extent.end());
@@ -1008,13 +1018,24 @@ void ADIOS2IOHandlerImpl::openDataset(
     auto &fileData = getFileData(file, IfFileNotOpen::ThrowError);
     *parameters.dtype =
         detail::fromADIOS2Type(fileData.m_IO.VariableType(varName));
+
+    /*
+     * Technically, the only reason to set read-time operators is for specifying
+     * decompression threads. This needs not happen at a per-dataset level.
+     * However, users may apply the same JSON/TOML config for writing and
+     * reading, so the dataset-specific configuration should still be explored
+     * here.
+     */
+    std::vector<ParameterizedOperator> operators =
+        getDatasetOperators(parameters, writable, varName);
     switchAdios2VariableType<detail::DatasetOpener>(
         *parameters.dtype,
         this,
         file,
         varName,
         parameters,
-        fileData.stepSelection());
+        fileData.stepSelection(),
+        operators);
     writable->written = true;
 }
 
@@ -2181,7 +2202,9 @@ namespace detail
         InvalidatableFile const &file,
         const std::string &varName,
         Parameter<Operation::OPEN_DATASET> &parameters,
-        std::optional<size_t> stepSelection)
+        std::optional<size_t> stepSelection,
+        std::vector<ADIOS2IOHandlerImpl::ParameterizedOperator> const
+            &operators)
     {
         auto &fileData = impl->getFileData(
             file, ADIOS2IOHandlerImpl::IfFileNotOpen::ThrowError);
@@ -2224,7 +2247,7 @@ ERROR: Variable ')"[1] + varName +
         }
 
         // Operators in reading needed e.g. for setting decompression threads
-        for (auto const &operation : impl->defaultOperators)
+        for (auto const &operation : operators)
         {
             if (operation.op)
             {
@@ -2349,35 +2372,34 @@ ERROR: Variable ')"[1] + varName +
 #if openPMD_HAVE_MPI
 
 ADIOS2IOHandler::ADIOS2IOHandler(
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
     std::string path,
     openPMD::Access at,
     MPI_Comm comm,
     json::TracingJSON options,
     std::string engineType,
     std::string specifiedExtension)
-    : AbstractIOHandler(std::move(path), at, comm)
-    , m_impl{
-          this,
-          comm,
+    : AbstractIOHandler(
+          std::move(initialize_from),
+          std::move(path),
+          at,
           std::move(options),
-          std::move(engineType),
-          std::move(specifiedExtension)}
+          comm)
+    , m_impl{this, comm, std::move(engineType), std::move(specifiedExtension)}
 {}
 
 #endif
 
 ADIOS2IOHandler::ADIOS2IOHandler(
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
     std::string path,
     Access at,
     json::TracingJSON options,
     std::string engineType,
     std::string specifiedExtension)
-    : AbstractIOHandler(std::move(path), at)
-    , m_impl{
-          this,
-          std::move(options),
-          std::move(engineType),
-          std::move(specifiedExtension)}
+    : AbstractIOHandler(
+          std::move(initialize_from), std::move(path), at, std::move(options))
+    , m_impl{this, std::move(engineType), std::move(specifiedExtension)}
 {}
 
 std::future<void>
@@ -2390,30 +2412,36 @@ ADIOS2IOHandler::flush(internal::ParsedFlushParams &flushParams)
 
 #if openPMD_HAVE_MPI
 ADIOS2IOHandler::ADIOS2IOHandler(
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
     std::string path,
     Access at,
     MPI_Comm comm,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
-    json::TracingJSON,
+    json::TracingJSON config,
     // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::string,
     // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::string)
-    : AbstractIOHandler(std::move(path), at, comm)
+    : AbstractIOHandler(
+          std::move(initialize_from),
+          std::move(path),
+          at,
+          std::move(config),
+          comm)
 {}
 
 #endif // openPMD_HAVE_MPI
 
 ADIOS2IOHandler::ADIOS2IOHandler(
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
     std::string path,
     Access at,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
-    json::TracingJSON,
+    json::TracingJSON config,
     // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::string,
     // NOLINTNEXTLINE(performance-unnecessary-value-param)
     std::string)
-    : AbstractIOHandler(std::move(path), at)
+    : AbstractIOHandler(
+          std::move(initialize_from), std::move(path), at, std::move(config))
 {}
 
 std::future<void> ADIOS2IOHandler::flush(internal::ParsedFlushParams &)

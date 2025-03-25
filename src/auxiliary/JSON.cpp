@@ -578,6 +578,12 @@ nlohmann::json &lowerCase(nlohmann::json &json)
                   * We use "\vnum" to indicate "any array index".
                   */
                  "\vnum",
+                 "parameters"},
+                {"adios2",
+                 "dataset",
+                 "\vnum",
+                 "operators",
+                 "\vnum",
                  "parameters"}};
             for (auto const &ignored : ignoredPaths)
             {
@@ -621,17 +627,12 @@ std::optional<std::string> asLowerCaseStringDynamic(nlohmann::json const &value)
     return maybeString;
 }
 
-std::vector<std::string> backendKeys()
-{
-    return {"adios2", "json", "toml", "hdf5"};
-}
-
 void warnGlobalUnusedOptions(TracingJSON const &config)
 {
     auto shadow = config.invertShadow();
     // The backends are supposed to deal with this
     // Only global options here
-    for (auto const &backendKey : json::backendKeys())
+    for (auto const &backendKey : json::backendKeys)
     {
         shadow.erase(backendKey);
     }
@@ -656,8 +657,8 @@ void warnGlobalUnusedOptions(TracingJSON const &config)
     }
 }
 
-nlohmann::json &
-merge(nlohmann::json &defaultVal, nlohmann::json const &overwrite)
+nlohmann::json &merge_internal(
+    nlohmann::json &defaultVal, nlohmann::json const &overwrite, bool do_prune)
 {
     if (defaultVal.is_object() && overwrite.is_object())
     {
@@ -665,15 +666,18 @@ merge(nlohmann::json &defaultVal, nlohmann::json const &overwrite)
         for (auto it = overwrite.begin(); it != overwrite.end(); ++it)
         {
             auto &valueInDefault = defaultVal[it.key()];
-            merge(valueInDefault, it.value());
-            if (valueInDefault.is_null())
+            merge_internal(valueInDefault, it.value(), do_prune);
+            if (do_prune && valueInDefault.is_null())
             {
                 prunedKeys.push(it.key());
             }
         }
-        for (; !prunedKeys.empty(); prunedKeys.pop())
+        if (do_prune)
         {
-            defaultVal.erase(prunedKeys.front());
+            for (; !prunedKeys.empty(); prunedKeys.pop())
+            {
+                defaultVal.erase(prunedKeys.front());
+            }
         }
     }
     else
@@ -693,11 +697,22 @@ merge(nlohmann::json &defaultVal, nlohmann::json const &overwrite)
     return defaultVal;
 }
 
-std::string merge(std::string const &defaultValue, std::string const &overwrite)
+template <typename... MPI_Comm_t>
+std::string merge_impl(
+    std::string const &defaultValue,
+    std::string const &overwrite,
+    MPI_Comm_t &&...comm)
 {
-    auto [res, returnFormat] =
-        parseOptions(defaultValue, /* considerFiles = */ false);
-    merge(res, parseOptions(overwrite, /* considerFiles = */ false).config);
+    auto res = parseOptions(
+                   defaultValue,
+                   std::forward<MPI_Comm_t>(comm)...,
+                   /* considerFiles = */ true)
+                   .config;
+    auto [second, returnFormat] = parseOptions(
+        overwrite,
+        std::forward<MPI_Comm_t>(comm)...,
+        /* considerFiles = */ true);
+    merge_internal(res, second, /* do_prune = */ true);
     switch (returnFormat)
     {
     case SupportedLanguages::JSON:
@@ -712,6 +727,21 @@ std::string merge(std::string const &defaultValue, std::string const &overwrite)
     }
     throw std::runtime_error("Unreachable!");
 }
+
+std::string merge(std::string const &defaultValue, std::string const &overwrite)
+{
+    return merge_impl(defaultValue, overwrite);
+}
+
+#if openPMD_HAVE_MPI
+std::string merge(
+    std::string const &defaultValue,
+    std::string const &overwrite,
+    MPI_Comm comm)
+{
+    return merge_impl(defaultValue, overwrite, comm);
+}
+#endif
 
 nlohmann::json &
 filterByTemplate(nlohmann::json &defaultVal, nlohmann::json const &positiveMask)

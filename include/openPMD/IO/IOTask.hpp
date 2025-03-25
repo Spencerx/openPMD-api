@@ -43,6 +43,10 @@ namespace openPMD
 {
 class Attributable;
 class Writable;
+namespace json
+{
+    class JsonMatcher;
+}
 
 Writable *getWritable(Attributable *);
 
@@ -99,6 +103,18 @@ struct OPENPMDAPI_EXPORT AbstractParameter
     AbstractParameter() = default;
 
     virtual std::unique_ptr<AbstractParameter> to_heap() && = 0;
+
+    /** Warn about unused JSON paramters
+     *
+     * Template parameter so we don't have to include the JSON lib here.
+     * This function is useful for the createDataset() methods in,
+     * IOHandlerImpl's, so putting that here is the simplest way to make it
+     * available for them. */
+    template <typename TracingJSON>
+    static void warnUnusedParameters(
+        TracingJSON &,
+        std::string const &currentBackendName,
+        std::string const &warningMessage);
 
 protected:
     // avoid object slicing
@@ -361,17 +377,11 @@ struct OPENPMDAPI_EXPORT Parameter<Operation::CREATE_DATASET>
     std::string options = "{}";
     std::optional<size_t> joinedDimension;
 
-    /** Warn about unused JSON paramters
-     *
-     * Template parameter so we don't have to include the JSON lib here.
-     * This function is useful for the createDataset() methods in,
-     * IOHandlerImpl's, so putting that here is the simplest way to make it
-     * available for them. */
     template <typename TracingJSON>
-    static void warnUnusedParameters(
-        TracingJSON &,
-        std::string const &currentBackendName,
-        std::string const &warningMessage);
+    TracingJSON compileJSONConfig(
+        Writable const *writable,
+        json::JsonMatcher &,
+        std::string const &backendName) const;
 };
 
 template <>
@@ -408,6 +418,12 @@ struct OPENPMDAPI_EXPORT Parameter<Operation::OPEN_DATASET>
         return std::unique_ptr<AbstractParameter>(
             new Parameter<Operation::OPEN_DATASET>(std::move(*this)));
     }
+
+    template <typename TracingJSON>
+    static TracingJSON compileJSONConfig(
+        Writable const *writable,
+        json::JsonMatcher &,
+        std::string const &backendName);
 
     std::string name = "";
     std::shared_ptr<Datatype> dtype = std::make_shared<Datatype>();

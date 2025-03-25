@@ -30,6 +30,9 @@ namespace openPMD
 /** Construct an appropriate specific IOHandler for the desired IO mode that may
  be MPI-aware.
  *
+ * @param   initialize_from Optionally initialize the IOHandler from a previous
+ *                      interim IOHandler which to replace with the handler now
+ *                      being initialized.
  * @param   path        Path to root folder for all operations associated with
  the desired handler.
  * @param   access      Access mode describing desired operations and
@@ -47,6 +50,7 @@ namespace openPMD
  */
 template <typename JSON>
 std::unique_ptr<AbstractIOHandler> createIOHandler(
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
     std::string path,
     Access access,
     Format format,
@@ -58,6 +62,9 @@ std::unique_ptr<AbstractIOHandler> createIOHandler(
 
 /** Construct an appropriate specific IOHandler for the desired IO mode.
  *
+ * @param   initialize_from Optionally initialize the IOHandler from a previous
+ *                      interim IOHandler which to replace with the handler now
+ *                      being initialized.
  * @param   path        Path to root folder for all operations associated with
  * the desired handler.
  * @param   access      Access describing desired operations and permissions
@@ -74,6 +81,7 @@ std::unique_ptr<AbstractIOHandler> createIOHandler(
  */
 template <typename JSON>
 std::unique_ptr<AbstractIOHandler> createIOHandler(
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
     std::string path,
     Access access,
     Format format,
@@ -83,6 +91,7 @@ std::unique_ptr<AbstractIOHandler> createIOHandler(
 
 // version without configuration to use in AuxiliaryTest
 std::unique_ptr<AbstractIOHandler> createIOHandler(
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
     std::string path,
     Access access,
     Format format,

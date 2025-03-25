@@ -122,7 +122,6 @@ public:
     ADIOS2IOHandlerImpl(
         AbstractIOHandler *,
         MPI_Comm,
-        json::TracingJSON config,
         std::string engineType,
         std::string specifiedExtension);
 
@@ -130,7 +129,6 @@ public:
 
     explicit ADIOS2IOHandlerImpl(
         AbstractIOHandler *,
-        json::TracingJSON config,
         std::string engineType,
         std::string specifiedExtension);
 
@@ -344,6 +342,10 @@ private:
 
     // use m_config
     std::optional<std::vector<ParameterizedOperator>> getOperators();
+
+    template <typename Parameter>
+    std::vector<ParameterizedOperator> getDatasetOperators(
+        Parameter const &, Writable *, std::string const &varName);
 
     std::string fileSuffix(bool verbose = true) const;
 
@@ -587,7 +589,9 @@ namespace detail
             InvalidatableFile const &,
             std::string const &varName,
             Parameter<Operation::OPEN_DATASET> &parameters,
-            std::optional<size_t> stepSelection);
+            std::optional<size_t> stepSelection,
+            std::vector<ADIOS2IOHandlerImpl::ParameterizedOperator> const
+                &operators);
 
         static constexpr char const *errorMsg = "ADIOS2: openDataset()";
     };
@@ -858,6 +862,7 @@ public:
 #if openPMD_HAVE_MPI
 
     ADIOS2IOHandler(
+        std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
         std::string path,
         Access,
         MPI_Comm,
@@ -868,6 +873,7 @@ public:
 #endif
 
     ADIOS2IOHandler(
+        std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
         std::string path,
         Access,
         json::TracingJSON options,

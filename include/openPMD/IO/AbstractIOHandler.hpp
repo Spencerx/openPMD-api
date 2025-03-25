@@ -40,6 +40,11 @@
 
 namespace openPMD
 {
+namespace json
+{
+    class JsonMatcher;
+}
+
 /**
  * @brief Determine what items should be flushed upon Series::flush()
  *
@@ -202,27 +207,47 @@ class AbstractIOHandler
     friend class Series;
     friend class ADIOS2IOHandlerImpl;
     friend class JSONIOHandlerImpl;
+    friend class HDF5IOHandlerImpl;
     friend class detail::ADIOS2File;
 
 private:
     void setIterationEncoding(IterationEncoding encoding);
 
+protected:
+    // Needs to be a pointer due to include structure, this header is
+    // transitively included in user code, but we don't reexport the JSON
+    // library
+    std::unique_ptr<json::JsonMatcher> jsonMatcher;
+
 public:
 #if openPMD_HAVE_MPI
-    AbstractIOHandler(std::string path, Access at, MPI_Comm)
-        : directory{std::move(path)}, m_backendAccess{at}, m_frontendAccess{at}
-    {}
+    template <typename TracingJSON>
+    AbstractIOHandler(
+        std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
+        std::string path,
+        Access at,
+        TracingJSON &&jsonConfig,
+        MPI_Comm);
 #endif
-    AbstractIOHandler(std::string path, Access at)
-        : directory{std::move(path)}, m_backendAccess{at}, m_frontendAccess{at}
-    {}
-    virtual ~AbstractIOHandler() = default;
 
-    AbstractIOHandler(AbstractIOHandler const &) = default;
-    AbstractIOHandler(AbstractIOHandler &&) = default;
+    template <typename TracingJSON>
+    AbstractIOHandler(
+        std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
+        std::string path,
+        Access at,
+        TracingJSON &&jsonConfig);
 
-    AbstractIOHandler &operator=(AbstractIOHandler const &) = default;
-    AbstractIOHandler &operator=(AbstractIOHandler &&) = default;
+    AbstractIOHandler(std::optional<std::unique_ptr<AbstractIOHandler>>);
+
+    virtual ~AbstractIOHandler();
+
+    AbstractIOHandler(AbstractIOHandler const &) = delete;
+    // std::queue::queue(queue&&) is not noexcept
+    // NOLINTNEXTLINE(performance-noexcept-move-constructor)
+    AbstractIOHandler(AbstractIOHandler &&) noexcept(false);
+
+    AbstractIOHandler &operator=(AbstractIOHandler const &) = delete;
+    AbstractIOHandler &operator=(AbstractIOHandler &&) noexcept;
 
     /** Add provided task to queue according to FIFO.
      *

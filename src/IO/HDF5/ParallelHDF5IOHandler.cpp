@@ -58,9 +58,18 @@ namespace openPMD
 #endif
 
 ParallelHDF5IOHandler::ParallelHDF5IOHandler(
-    std::string path, Access at, MPI_Comm comm, json::TracingJSON config)
-    : AbstractIOHandler(std::move(path), at, comm)
-    , m_impl{new ParallelHDF5IOHandlerImpl(this, comm, std::move(config))}
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
+    std::string path,
+    Access at,
+    MPI_Comm comm,
+    json::TracingJSON config)
+    : AbstractIOHandler(
+          std::move(initialize_from),
+          std::move(path),
+          at,
+          std::move(config),
+          comm)
+    , m_impl{new ParallelHDF5IOHandlerImpl(this, comm)}
 {}
 
 ParallelHDF5IOHandler::~ParallelHDF5IOHandler() = default;
@@ -72,7 +81,8 @@ ParallelHDF5IOHandler::flush(internal::ParsedFlushParams &params)
         hdf5_config_it != params.backendConfig.json().end())
     {
         auto copied_global_cfg = m_impl->m_global_flush_config;
-        json::merge(copied_global_cfg, hdf5_config_it.value());
+        json::merge_internal(
+            copied_global_cfg, hdf5_config_it.value(), /* do_prune = */ true);
         hdf5_config_it.value() = std::move(copied_global_cfg);
     }
     else
@@ -83,8 +93,8 @@ ParallelHDF5IOHandler::flush(internal::ParsedFlushParams &params)
 }
 
 ParallelHDF5IOHandlerImpl::ParallelHDF5IOHandlerImpl(
-    AbstractIOHandler *handler, MPI_Comm comm, json::TracingJSON config)
-    : HDF5IOHandlerImpl{handler, std::move(config), /* do_warn_unused_params = */ false}
+    AbstractIOHandler *handler, MPI_Comm comm)
+    : HDF5IOHandlerImpl{handler, /* do_warn_unused_params = */ false}
     , m_mpiComm{comm}
     , m_mpiInfo{MPI_INFO_NULL} /* MPI 3.0+: MPI_INFO_ENV */
 {
@@ -422,22 +432,27 @@ ParallelHDF5IOHandlerImpl::flush(internal::ParsedFlushParams &params)
 
 #if openPMD_HAVE_MPI
 ParallelHDF5IOHandler::ParallelHDF5IOHandler(
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
     std::string path,
     Access at,
     MPI_Comm comm,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
-    [[maybe_unused]] json::TracingJSON config)
-    : AbstractIOHandler(std::move(path), at, comm)
+    json::TracingJSON config)
+    : AbstractIOHandler(
+          std::move(initialize_from),
+          std::move(path),
+          at,
+          std::move(config),
+          comm)
 {
     throw std::runtime_error("openPMD-api built without HDF5 support");
 }
 #else
 ParallelHDF5IOHandler::ParallelHDF5IOHandler(
+    std::optional<std::unique_ptr<AbstractIOHandler>> initialize_from,
     std::string const &path,
     Access at,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
-    [[maybe_unused]] json::TracingJSON config)
-    : AbstractIOHandler(path, at)
+    json::TracingJSON config)
+    : AbstractIOHandler(std::move(initialize_from), path, at, std::move(config))
 {
     throw std::runtime_error(
         "openPMD-api built without parallel support and without HDF5 support");

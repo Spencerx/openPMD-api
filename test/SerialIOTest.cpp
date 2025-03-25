@@ -5951,11 +5951,8 @@ void variableBasedSeries(std::string const &file)
             {
                 REQUIRE(
                     iteration.getAttribute("changing_value").get<unsigned>() ==
-                    (supportsModifiableAttributes
-                         ? (access == Access::READ_LINEAR
-                                ? iteration.iterationIndex
-                                : 9)
-                         : 0));
+                    (supportsModifiableAttributes ? iteration.iterationIndex
+                                                  : 0));
             }
             auto E_x = iteration.meshes["E"]["x"];
             REQUIRE(E_x.getDimensionality() == 1);
@@ -5975,13 +5972,12 @@ void variableBasedSeries(std::string const &file)
 
             last_iteration_index = iteration.iterationIndex;
 
-            if (access == Access::READ_RANDOM_ACCESS)
-            {
-                continue;
-            }
-
             // this loop ensures that only the recordcomponent ["E"]["i"] is
             // present where i == iteration.iterationIndex
+            // Note that this works for ReadRandomAccess as well since constant
+            // components contain no datasets. The ADIOS2 backend is however not
+            // (yet) able to deal with array datasets that are present only in a
+            // subselection of steps.
             for (uint64_t otherIteration = 0; otherIteration < 10;
                  ++otherIteration)
             {

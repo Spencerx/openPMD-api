@@ -1881,17 +1881,15 @@ class APITest(unittest.TestCase):
 
     def makeIteratorRoundTrip(self, backend, file_ending):
         # write
-        jsonConfig = """
-{
-  "defer_iteration_parsing": true,
-  "adios2": {
-    "engine": {
-      "type": "bp4",
-      "usesteps": true
-    }
-  }
-}
-"""
+        jsonConfig = {
+            "defer_iteration_parsing": True,
+            "adios2": {
+                "engine": {
+                    "type": "bp4",
+                    "usesteps": True
+                }
+            }
+        }
         series = io.Series(
             "../samples/unittest_serialIterator." + file_ending,
             io.Access_Type.create,
@@ -1985,7 +1983,7 @@ class APITest(unittest.TestCase):
         read = io.Series(
             name,
             io.Access_Type.read_only,
-            options='{"defer_iteration_parsing": true}'
+            options={"defer_iteration_parsing": True}
         )
 
         read.iterations[0].open()
@@ -2073,51 +2071,49 @@ class APITest(unittest.TestCase):
             self.writeFromTemporary(ext)
 
     def testJsonConfigADIOS2(self):
-        global_config = """
-{
-  "adios2": {
-    "engine": {
-      "type": "bp3",
-      "unused": "parameter",
-      "parameters": {
-        "BufferGrowthFactor": "2.0",
-        "Profile": "On"
-      }
-    },
-    "unused": "as well",
-    "dataset": {
-      "operators": [
-        {
-          "type": "blosc",
-          "parameters": {
-              "clevel": "1",
-              "doshuffle": "BLOSC_BITSHUFFLE"
-          }
+        global_config = {
+            "adios2": {
+                "engine": {
+                    "type": "bp3",
+                    "unused": "parameter",
+                    "parameters": {
+                        "BufferGrowthFactor": "2.0",
+                        "Profile": "On"
+                    }
+                },
+                "unused": "as well",
+                "dataset": {
+                    "operators": [
+                        {
+                            "type": "blosc",
+                            "parameters": {
+                                "clevel": "1",
+                                "doshuffle": "BLOSC_BITSHUFFLE"
+                            }
+                        }
+                    ]
+                }
+            }
         }
-      ]
-    }
-  }
-}
-"""
-        local_config = """
-{
-  "adios2": {
-    "unused": "dataset parameter",
-    "dataset": {
-      "unused": "too",
-      "operators": [
-        {
-          "type": "blosc",
-          "parameters": {
-              "clevel": "3",
-              "doshuffle": "BLOSC_BITSHUFFLE"
-          }
+
+        local_config = {
+            "adios2": {
+                "unused": "dataset parameter",
+                "dataset": {
+                    "unused": "too",
+                    "operators": [
+                        {
+                            "type": "blosc",
+                            "parameters": {
+                                "clevel": "3",
+                                "doshuffle": "BLOSC_BITSHUFFLE"
+                            }
+                        }
+                    ]
+                }
+            }
         }
-      ]
-    }
-  }
-}
-"""
+
         if not io.variants['adios2']:
             return
         series = io.Series(
@@ -2222,6 +2218,26 @@ class APITest(unittest.TestCase):
         self.assertEqual(e_chargeDensity.get_attribute("geometry"), "other")
         self.assertEqual(e_chargeDensity.geometry, io.Geometry.other)
         self.assertEqual(e_chargeDensity.geometry_string, "other")
+
+    def testSeriesConstructors(self):
+        import json
+        from pathlib import Path
+
+        cfg = {"iteration_encoding": "variable_based"}
+        cfg_as_string = json.dumps(cfg)
+        cfg_as_file = "../samples/cfg.json"
+        with open(cfg_as_file, 'w') as f:
+            json.dump(cfg, f)
+        cfg_as_filepath = Path(cfg_as_file)
+
+        series_path = "../samples/series_constructors.json"
+        series_filepath = Path(series_path)
+
+        for f in [series_path, series_filepath]:
+            for c in [cfg, cfg_as_string, f"@{cfg_as_file}", cfg_as_filepath]:
+                # print(f"Creating Series with '{f}'\t'{c}'")
+                s = io.Series(f, io.Access.create, c)
+                s.close()
 
 
 if __name__ == '__main__':

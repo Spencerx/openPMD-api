@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-import json
 import sys
 
 import openpmd_api as io
@@ -18,8 +17,7 @@ if __name__ == "__main__":
         print("SST engine not available in ADIOS2.")
         sys.exit(0)
 
-    series = io.Series("simData.sst", io.Access_Type.read_linear,
-                       json.dumps(config))
+    series = io.Series("simData.sst", io.Access_Type.read_linear, config)
 
     # Read all available iterations and print electron position data.
     # Direct access to iterations is possible via `series.iterations`.

@@ -26,6 +26,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
+
+#if openPMD_USE_FILESYSTEM_HEADER
+#include <pybind11/stl/filesystem.h>
+#endif
 // not yet used:
 //   pybind11/functional.h  // for std::function
 

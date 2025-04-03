@@ -151,6 +151,8 @@ option(openPMD_USE_INTERNAL_TOML11   "Use internally shipped toml11"        ${op
 
 option(openPMD_USE_INVASIVE_TESTS "Enable unit tests that modify source code" OFF)
 option(openPMD_USE_VERIFY "Enable internal VERIFY (assert) macro independent of build type" ON)
+option(openPMD_USE_FILESYSTEM_HEADER "Enable filesystem header. May be disabled for old compiler versions." OFF)
+mark_as_advanced(openPMD_USE_FILESYSTEM_HEADER)
 
 set(CMAKE_CONFIGURATION_TYPES "Release;Debug;MinSizeRel;RelWithDebInfo")
 if(NOT CMAKE_BUILD_TYPE)
@@ -552,6 +554,7 @@ endif()
 if(openPMD_HAVE_PYTHON)
     add_library(openPMD.py MODULE
         src/binding/python/openPMD.cpp
+        src/binding/python/auxiliary.cpp
         src/binding/python/Access.cpp
         src/binding/python/Attributable.cpp
         src/binding/python/BaseRecordComponent.cpp
@@ -730,6 +733,18 @@ if(openPMD_USE_INVASIVE_TESTS)
                         "known to fail on Windows!")
     endif()
     target_compile_definitions(openPMD PRIVATE openPMD_USE_INVASIVE_TESTS=1)
+endif()
+
+function(set_filesystem_header_for_target target)
+    if(openPMD_USE_FILESYSTEM_HEADER)
+        target_compile_definitions(${target} PRIVATE openPMD_USE_FILESYSTEM_HEADER=1)
+    else()
+        target_compile_definitions(${target} PRIVATE openPMD_USE_FILESYSTEM_HEADER=0)
+    endif()
+endfunction()
+set_filesystem_header_for_target(openPMD)
+if(openPMD_HAVE_PYTHON)
+    set_filesystem_header_for_target(openPMD.py)
 endif()
 
 if(openPMD_BUILD_TESTING)

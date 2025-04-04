@@ -5067,8 +5067,9 @@ this = "should not warn"
 
     // BP3 engine writes files, BP4 writes directories
     REQUIRE(openPMD::auxiliary::file_exists("../samples/jsonConfiguredBP3.bp"));
-    REQUIRE(openPMD::auxiliary::directory_exists(
-        "../samples/jsonConfiguredBP4.bp"));
+    REQUIRE(
+        openPMD::auxiliary::directory_exists(
+            "../samples/jsonConfiguredBP4.bp"));
 
     std::string readConfigBP3 = R"END(
 {
@@ -6804,8 +6805,9 @@ void deferred_parsing(std::string const &extension)
             }
             infix = padding.append(infix);
             std::ofstream file;
-            file.open(std::string(basename).append(infix).append(".").append(
-                extension));
+            file.open(
+                std::string(basename).append(infix).append(".").append(
+                    extension));
             file.close();
         }
     }
@@ -7166,9 +7168,10 @@ TEST_CASE("late_setting_of_iterationencoding", "[serial]")
         REQUIRE_THROWS_WITH(
             series.setIterationEncoding(
                 ::openPMD::IterationEncoding::fileBased),
-            Catch::Equals("Wrong API usage: For fileBased formats the "
-                          "iteration expansion pattern %T must "
-                          "be included in the file name"));
+            Catch::Equals(
+                "Wrong API usage: For fileBased formats the "
+                "iteration expansion pattern %T must "
+                "be included in the file name"));
         series.flush();
     }
     {

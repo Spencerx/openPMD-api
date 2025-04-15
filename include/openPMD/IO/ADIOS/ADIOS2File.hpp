@@ -22,6 +22,7 @@
 
 #include "openPMD/IO/ADIOS/ADIOS2Auxiliary.hpp"
 #include "openPMD/IO/ADIOS/ADIOS2PreloadAttributes.hpp"
+#include "openPMD/IO/ADIOS/ADIOS2PreloadVariables.hpp"
 #include "openPMD/IO/AbstractIOHandler.hpp"
 #include "openPMD/IO/IOTask.hpp"
 #include "openPMD/IO/InvalidatableFile.hpp"
@@ -83,7 +84,8 @@ struct DatasetReader
         adios2::IO &IO,
         adios2::Engine &engine,
         std::string const &fileName,
-        std::optional<size_t> stepSelection);
+        std::optional<size_t> stepSelection,
+        detail::AdiosVariables const &av);
 
     static constexpr char const *errorMsg = "ADIOS2: readDataset()";
 };
@@ -335,11 +337,6 @@ public:
     std::vector<std::string>
     availableVariablesPrefixed(std::string const &prefix);
 
-    /*
-     * See description below.
-     */
-    void invalidateVariablesMap();
-
     void markActive(Writable *);
 
     // bool isActive(std::string const & path);
@@ -420,6 +417,14 @@ public:
     {
         return m_attributes;
     }
+    [[nodiscard]] detail::AdiosVariables const &variables() const
+    {
+        return m_variables;
+    }
+    [[nodiscard]] detail::AdiosVariables &variables()
+    {
+        return m_variables;
+    }
 
 private:
     ADIOS2IOHandlerImpl *m_impl;
@@ -448,7 +453,7 @@ private:
      * IO::Available(Attributes|Variables).
      */
     AdiosAttributes m_attributes;
-    std::optional<AttributeMap_t> m_availableVariables;
+    AdiosVariables m_variables;
 
     std::set<Writable *> m_pathsMarkedAsActive;
 

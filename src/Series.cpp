@@ -1244,6 +1244,17 @@ std::future<void> Series::flush_impl(
     internal::FlushParams const &flushParams,
     bool flushIOHandler)
 {
+    if (!written() && access::readOnly(IOHandler()->m_frontendAccess) &&
+        IOHandler()->m_work.empty())
+    {
+        throw error::WrongAPIUsage(
+            "Attempting to flush the Series in Read mode even though no "
+            "operation has been performed yet. If this error occurs to you in "
+            "Access::READ_LINEAR mode, then either try using "
+            "Series::parseBase() or use Series::snapshots() / "
+            "Series::readIterations() to access the first Iteration. If this "
+            "occurs in Access::READ_ONLY, then this is likely a bug.");
+    }
     IOHandler()->m_lastFlushSuccessful = true;
     try
     {
@@ -3514,7 +3525,10 @@ bool Series::randomAccessSteps() const
         }
         return false;
     };
-    return iterationEncoding() == IterationEncoding::variableBased &&
+    return get().m_parsePreference.value_or(
+               internal::ParsePreference::UpFront) ==
+        internal::ParsePreference::UpFront &&
+        iterationEncoding() == IterationEncoding::variableBased &&
         randomAccess(IOHandler()->m_backendAccess);
 }
 

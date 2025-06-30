@@ -1294,15 +1294,24 @@ void HDF5IOHandlerImpl::openDataset(
     *dtype = d;
 
     int ndims = H5Sget_simple_extent_ndims(dataset_space);
-    std::vector<hsize_t> dims(ndims, 0);
-    std::vector<hsize_t> maxdims(ndims, 0);
+    if (ndims == 0)
+    {
+        // Is a scalar. Since the openPMD-api frontend supports no scalar
+        // datasets, return the extent as {1}
+        *parameters.extent = {1};
+    }
+    else
+    {
+        std::vector<hsize_t> dims(ndims, 0);
+        std::vector<hsize_t> maxdims(ndims, 0);
 
-    H5Sget_simple_extent_dims(dataset_space, dims.data(), maxdims.data());
-    Extent e;
-    for (auto const &val : dims)
-        e.push_back(val);
-    auto extent = parameters.extent;
-    *extent = e;
+        H5Sget_simple_extent_dims(dataset_space, dims.data(), maxdims.data());
+        Extent e;
+        for (auto const &val : dims)
+            e.push_back(val);
+        auto &extent = parameters.extent;
+        *extent = e;
+    }
 
     herr_t status;
     status = H5Sclose(dataset_space);
@@ -1555,28 +1564,54 @@ void HDF5IOHandlerImpl::writeDataset(
         "[HDF5] Internal error: Failed to open HDF5 dataset during dataset "
         "write");
 
-    std::vector<hsize_t> start;
-    for (auto const &val : parameters.offset)
-        start.push_back(static_cast<hsize_t>(val));
-    std::vector<hsize_t> stride(start.size(), 1); /* contiguous region */
-    std::vector<hsize_t> count(start.size(), 1); /* single region */
-    std::vector<hsize_t> block;
-    for (auto const &val : parameters.extent)
-        block.push_back(static_cast<hsize_t>(val));
-    memspace =
-        H5Screate_simple(static_cast<int>(block.size()), block.data(), nullptr);
     filespace = H5Dget_space(dataset_id);
-    status = H5Sselect_hyperslab(
-        filespace,
-        H5S_SELECT_SET,
-        start.data(),
-        stride.data(),
-        count.data(),
-        block.data());
-    VERIFY(
-        status == 0,
-        "[HDF5] Internal error: Failed to select hyperslab during dataset "
-        "write");
+    int ndims = H5Sget_simple_extent_ndims(filespace);
+
+    if (ndims == 0)
+    {
+        if (parameters.offset != Offset{0} || parameters.extent != Extent{1})
+        {
+            std::stringstream errorMessage;
+            errorMessage
+                << "HDF5 dataset '" << concrete_h5_file_position(writable)
+                << "' is scalar (dimensionality 0) and must be accessed with "
+                   "offset [0] and extent [1]. Was accessed with offset ";
+            auxiliary::write_vec_to_stream(errorMessage, parameters.offset)
+                << " and extent ";
+            auxiliary::write_vec_to_stream(errorMessage, parameters.extent)
+                << ".";
+            throw error::WrongAPIUsage(errorMessage.str());
+        }
+        memspace = H5Screate_simple(0, nullptr, nullptr);
+        VERIFY(
+            memspace > 0,
+            "[HDF5] Internal error: Failed to create memspace during dataset "
+            "write");
+    }
+    else
+    {
+        std::vector<hsize_t> start;
+        for (auto const &val : parameters.offset)
+            start.push_back(static_cast<hsize_t>(val));
+        std::vector<hsize_t> stride(start.size(), 1); /* contiguous region */
+        std::vector<hsize_t> count(start.size(), 1); /* single region */
+        std::vector<hsize_t> block;
+        for (auto const &val : parameters.extent)
+            block.push_back(static_cast<hsize_t>(val));
+        memspace = H5Screate_simple(
+            static_cast<int>(block.size()), block.data(), nullptr);
+        status = H5Sselect_hyperslab(
+            filespace,
+            H5S_SELECT_SET,
+            start.data(),
+            stride.data(),
+            count.data(),
+            block.data());
+        VERIFY(
+            status == 0,
+            "[HDF5] Internal error: Failed to select hyperslab during dataset "
+            "write");
+    }
 
     void const *data = parameters.data.get();
 
@@ -2013,28 +2048,54 @@ void HDF5IOHandlerImpl::readDataset(
         "[HDF5] Internal error: Failed to open HDF5 dataset during dataset "
         "read");
 
-    std::vector<hsize_t> start;
-    for (auto const &val : parameters.offset)
-        start.push_back(static_cast<hsize_t>(val));
-    std::vector<hsize_t> stride(start.size(), 1); /* contiguous region */
-    std::vector<hsize_t> count(start.size(), 1); /* single region */
-    std::vector<hsize_t> block;
-    for (auto const &val : parameters.extent)
-        block.push_back(static_cast<hsize_t>(val));
-    memspace =
-        H5Screate_simple(static_cast<int>(block.size()), block.data(), nullptr);
     filespace = H5Dget_space(dataset_id);
-    status = H5Sselect_hyperslab(
-        filespace,
-        H5S_SELECT_SET,
-        start.data(),
-        stride.data(),
-        count.data(),
-        block.data());
-    VERIFY(
-        status == 0,
-        "[HDF5] Internal error: Failed to select hyperslab during dataset "
-        "read");
+    int ndims = H5Sget_simple_extent_ndims(filespace);
+
+    if (ndims == 0)
+    {
+        if (parameters.offset != Offset{0} || parameters.extent != Extent{1})
+        {
+            std::stringstream errorMessage;
+            errorMessage
+                << "HDF5 dataset '" << concrete_h5_file_position(writable)
+                << "' is scalar (dimensionality 0) and must be accessed with "
+                   "offset [0] and extent [1]. Was accessed with offset ";
+            auxiliary::write_vec_to_stream(errorMessage, parameters.offset)
+                << " and extent ";
+            auxiliary::write_vec_to_stream(errorMessage, parameters.extent)
+                << ".";
+            throw error::WrongAPIUsage(errorMessage.str());
+        }
+        memspace = H5Screate_simple(0, nullptr, nullptr);
+        VERIFY(
+            memspace > 0,
+            "[HDF5] Internal error: Failed to create memspace during dataset "
+            "read");
+    }
+    else
+    {
+        std::vector<hsize_t> start;
+        for (auto const &val : parameters.offset)
+            start.push_back(static_cast<hsize_t>(val));
+        std::vector<hsize_t> stride(start.size(), 1); /* contiguous region */
+        std::vector<hsize_t> count(start.size(), 1); /* single region */
+        std::vector<hsize_t> block;
+        for (auto const &val : parameters.extent)
+            block.push_back(static_cast<hsize_t>(val));
+        memspace = H5Screate_simple(
+            static_cast<int>(block.size()), block.data(), nullptr);
+        status = H5Sselect_hyperslab(
+            filespace,
+            H5S_SELECT_SET,
+            start.data(),
+            stride.data(),
+            count.data(),
+            block.data());
+        VERIFY(
+            status == 0,
+            "[HDF5] Internal error: Failed to select hyperslab during dataset "
+            "read");
+    }
 
     void *data = parameters.data.get();
 

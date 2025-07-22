@@ -13,7 +13,7 @@ if __name__ == "__main__":
     # open file for writing
     series = io.Series(
         "../samples/3_write_thetaMode_serial_py.h5",
-        io.Access.create
+        io.Access.create_linear
     )
 
     # configure and setup geometry
@@ -30,12 +30,7 @@ if __name__ == "__main__":
 
     geometry_parameters = "m={0};imag=+".format(num_modes)
 
-    # `Series.write_iterations()` and `Series.read_iterations()` are
-    # intentionally restricted APIs that ensure a workflow which also works
-    # in streaming setups, e.g. an iteration cannot be opened again once
-    # it has been closed.
-    # `Series.iterations` can be directly accessed in random-access workflows.
-    E = series.write_iterations()[0].meshes["E"]
+    E = series.snapshots()[0].meshes["E"]
     E.geometry = io.Geometry.thetaMode
     E.geometry_parameters = geometry_parameters
     E.grid_spacing = [1.0, 1.0]
@@ -69,8 +64,9 @@ if __name__ == "__main__":
 
     # The iteration can be closed in order to help free up resources.
     # The iteration's content will be flushed automatically.
-    # An iteration once closed cannot (yet) be reopened.
-    series.write_iterations()[0].close()
+    # In writing, restricted support for reopening Iterations once closed
+    # depends on the Iteration encoding and the backend.
+    series.snapshots()[0].close()
 
     # The files in 'series' are still open until the series is closed, at which
     # time it cleanly flushes and closes all open file handles.

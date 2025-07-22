@@ -24,7 +24,7 @@ if __name__ == "__main__":
     f.particles_path = "particles"
 
     # new iteration
-    cur_it = f.iterations[0]
+    cur_it = f.snapshots()[0]
 
     # particles
     electrons = cur_it.particles["electrons"]
@@ -71,7 +71,8 @@ if __name__ == "__main__":
 
     # The iteration can be closed in order to help free up resources.
     # The iteration's content will be flushed automatically.
-    # An iteration once closed cannot (yet) be reopened.
+    # In writing, restricted support for reopening Iterations once closed
+    # depends on the Iteration encoding and the backend.
     cur_it.close()
 
     # now the file is closed

@@ -2,6 +2,8 @@
 
 #include "openPMD/Iteration.hpp"
 #include "openPMD/snapshots/IteratorTraits.hpp"
+#include <optional>
+#include <utility>
 
 /* Public header due to use of AbstractSnapshotsContainer and its iterator type
  * OpaqueSeriesIterator in Snapshots class header. No direct user interaction
@@ -27,6 +29,21 @@ private:
         AbstractSeriesIterator<OpaqueSeriesIterator, value_type_in>;
     // no shared_ptr since copied iterators should not share state
     std::unique_ptr<DynamicSeriesIterator<value_type_in>> m_internal_iterator;
+
+protected:
+    using Self_t = OpaqueSeriesIterator<value_type_in>;
+
+    template <typename ChildClass>
+    auto to_concrete_iterator() -> std::optional<ChildClass>
+    {
+        auto bare_iterator =
+            dynamic_cast<ChildClass *>(this->m_internal_iterator.get());
+        if (!bare_iterator)
+        {
+            return std::nullopt;
+        }
+        return *bare_iterator;
+    }
 
 public:
     OpaqueSeriesIterator(
@@ -65,6 +82,15 @@ public:
     bool operator==(OpaqueSeriesIterator const &other) const;
 };
 
+/** Enum used as a label for distinguishing the different Snapshots
+ * implementations.
+ */
+enum class SnapshotWorkflow
+{
+    RandomAccess,
+    Synchronous
+};
+
 // Internal interface used by Snapshots class for interacting with containers.
 // This needs to be in a public header since the type definition is used in
 // private members of the Snapshots class which itself is a public class.
@@ -80,6 +106,7 @@ public:
     // iteration, these are the same type
     using reverse_iterator = OpaqueSeriesIterator<value_type>;
     using const_reverse_iterator = OpaqueSeriesIterator<value_type const>;
+    using size_type = size_t;
 
     virtual ~AbstractSnapshotsContainer() = 0;
 
@@ -110,5 +137,12 @@ public:
     virtual auto find(key_type const &key) const -> const_iterator = 0;
 
     virtual auto contains(key_type const &key) const -> bool = 0;
+
+    virtual auto erase(key_type const &key) -> size_type = 0;
+    virtual auto erase(iterator) -> iterator = 0;
+
+    virtual auto emplace(value_type &&) -> std::pair<iterator, bool> = 0;
+
+    virtual auto snapshotWorkflow() const -> SnapshotWorkflow = 0;
 };
 } // namespace openPMD

@@ -682,14 +682,6 @@ public:
      */
     ReadIterations readIterations();
 
-    /** Parameter for Series::snapshots(), see there.
-     */
-    enum class SnapshotWorkflow
-    {
-        RandomAccess,
-        Synchronous
-    };
-
     /** @brief Preferred way to access Iterations/Snapshots. Single API for all
      *         workflows and access modi.
      *
@@ -721,24 +713,18 @@ public:
      *
      * As a rule of thumb, the synchronous workflow should be preferred as long
      * as possible. The random-access workflow should be chosen when more
-     * flexible interaction with Snapshots is needed.
+     * flexible interaction with Snapshots is needed (especially for
+     * random-access read patterns).
      *
-     * Random-vs.-Synchronous access is determined automatically
-     * in READ workflows: Access::READ_LINEAR uses the synchronous workflow,
-     * while Access::READ_ONLY and Access::READ_WRITE use the random-access
-     * workflow.
+     * Random-vs.-Synchronous access is determined by the chosen Access modes:
+     * Access modes suffixed with _LINEAR will select the linear workflow, those
+     * suffixed with _RANDOM_ACCESS will select the random-access workflows.
+     * READ_WRITE selects the RANDOM_ACCESS workflow.
+     * Legacy access names (CREATE, APPEND, READ_ONLY) map to their
+     * RANDOM_ACCESS counterparts.
      *
-     * Conversely, the Access::CREATE and Access::APPEND access modes both
-     * resolve to random-access by default, but can be specified to use
-     * Synchronous workflow if needed. A shorthand for Synchronous workflows can
-     * be found with Series::writeIterations().
-     *
-     * @param snapshot_workflow Specify the intended workflow
-     *            in Access::CREATE and Access::APPEND. Leave unspecified in
-     *            other access modes as those support only one workflow each.
      */
-    Snapshots
-    snapshots(std::optional<SnapshotWorkflow> snapshot_workflow = std::nullopt);
+    Snapshots snapshots();
 
     /**
      * @brief Parse the Series.
@@ -1015,13 +1001,14 @@ OPENPMD_private
      */
     std::optional<std::vector<std::vector<IterationIndex_t>>>
     preparseSnapshots();
+
+    Snapshots makeRandomAccessSnapshots();
+    Snapshots makeSynchronousSnapshots();
     /* Should adios2::Variable<T>::SetStepSelection() be used for accessing
      * steps?
      */
     [[nodiscard]] bool randomAccessSteps() const;
 }; // Series
-
-using SnapshotWorkflow = Series::SnapshotWorkflow;
 
 namespace debug
 {

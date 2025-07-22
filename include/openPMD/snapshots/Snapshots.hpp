@@ -20,12 +20,11 @@
  */
 #pragma once
 
-#include "openPMD/Iteration.hpp"
 #include "openPMD/backend/Attributable.hpp"
 #include "openPMD/snapshots/ContainerTraits.hpp"
-#include <functional>
 #include <memory>
 #include <optional>
+#include <utility>
 
 namespace openPMD
 {
@@ -72,6 +71,7 @@ public:
     using reverse_iterator = AbstractSnapshotsContainer::reverse_iterator;
     using const_reverse_iterator =
         AbstractSnapshotsContainer::const_reverse_iterator;
+    using size_type = AbstractSnapshotsContainer::size_type;
 
     /** @brief The currently active Iteration.
      *
@@ -157,8 +157,18 @@ public:
      */
     auto contains(key_type const &key) const -> bool;
 
-    // erase
-    // emplace
+    auto erase(key_type const &key) -> size_type;
+    auto erase(iterator) -> iterator;
+
+    /* Does not really emplace since we need to forward to abstract
+     * implementations and can hence not work with templates. */
+    template <typename... Args>
+    auto emplace(Args &&...args) -> std::pair<iterator, bool>
+    {
+        return m_snapshots->emplace({args...});
+    }
+
+    auto snapshotWorkflow() const -> SnapshotWorkflow;
 };
 
 // backwards compatibility

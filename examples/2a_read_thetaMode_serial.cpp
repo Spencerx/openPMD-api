@@ -34,7 +34,7 @@ int main()
     Series series =
         Series("../samples/git-sample/thetaMode/data%T.h5", Access::READ_ONLY);
 
-    Iteration i = series.iterations[500];
+    Iteration i = series.snapshots()[500];
     MeshRecordComponent E_z_modes = i.meshes["E"]["z"];
     Extent extent = E_z_modes.getExtent(); // (modal components, r, z)
 
@@ -73,7 +73,6 @@ int main()
 
     // The iteration can be closed in order to help free up resources.
     // The iteration's content will be flushed automatically.
-    // An iteration once closed cannot (yet) be reopened.
     i.close();
 
     /* The files in 'series' are still open until the object is destroyed, on

@@ -41,15 +41,11 @@ int main(int argc, char *argv[])
          << ") that will be written\n";
 
     // open file for writing
-    Series series = Series("../samples/3_write_serial.h5", Access::CREATE);
+    Series series =
+        Series("../samples/3_write_serial.h5", Access::CREATE_LINEAR);
     cout << "Created an empty " << series.iterationEncoding() << " Series\n";
 
-    // `Series::writeIterations()` and `Series::readIterations()` are
-    // intentionally restricted APIs that ensure a workflow which also works
-    // in streaming setups, e.g. an iteration cannot be opened again once
-    // it has been closed.
-    // `Series::iterations` can be directly accessed in random-access workflows.
-    Mesh rho = series.writeIterations()[1].meshes["rho"];
+    Mesh rho = series.snapshots()[1].meshes["rho"];
     cout << "Created a scalar mesh Record with all required openPMD "
             "attributes\n";
 
@@ -73,8 +69,12 @@ int main(int argc, char *argv[])
 
     // The iteration can be closed in order to help free up resources.
     // The iteration's content will be flushed automatically.
-    // An iteration once closed cannot (yet) be reopened.
-    series.writeIterations()[1].close();
+    // Since we are using access mode CREATE_LINEAR which has at most one
+    // Iteration open at a time, this would happen automatically upon
+    // creating the next Iteration.
+    // In writing, restricted support for reopening Iterations once closed
+    // depends on the Iteration encoding and the backend.
+    series.snapshots()[1].close();
 
     cout << "Dataset content has been fully written\n";
 

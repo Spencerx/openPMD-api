@@ -25,61 +25,67 @@
 namespace openPMD
 {
 /** File access mode to use during IO.
+ *
+ * All access modes except READ_WRITE come in two versions, one suffixed as
+ * RANDOM_ACCESS and another suffixed as LINEAR. READ_WRITE is treated as a
+ * random-access mode, and has no linear equivalent.
+ * In random access mode, Iterations may be accessed in any order, any number of
+ * Iterations may be accessed at a given time, independent from other MPI ranks
+ * (while keeping in mind that opening a file will be a collective operation in
+ * most backends).
+ * In linear modes, Iterations are accessed one after another, there is
+ * generally at most one Iteration open at a time, and creating/opening
+ * Iterations is MPI collective. There is only restricted support for going back
+ * to an Iteration, once closed. For optimization purposes, Iteration data may
+ * be erased from frontend structures upon closing.
+ * Linear access modes will not access data on the filesystem before explicitly
+ * requesting to open the first Iteration, or explicitly calling
+ * `Series::parseBase()`.
+ *
+ * Detailed rules:
+ *
+ * 1. In backends that have no notion of IO steps (all except ADIOS2),
+ *    Access::READ_ONLY can always be used.
+ * 2. In backends that can be accessed either in random-access or
+ *    step-by-step, the chosen access mode decides which approach is used.
+ *    Examples are the BP4 and BP5 engines of ADIOS2.
+ * 3. In streaming backends, random-access is not possible.
+ *    When using such a backend, the access mode will be coerced
+ *    automatically to Access::READ_LINEAR. Use of Series::readIterations()
+ *    is mandatory for access.
  */
 enum class Access
 {
+    READ_ONLY = 0,
     /**
      * Open Series as read-only, fails if Series is not found.
-     * When to use READ_ONLY or READ_LINEAR:
-     *
-     * * When intending to use Series::readIterations()
-     *   (i.e. step-by-step reading of iterations, e.g. in streaming),
-     *   then Access::READ_LINEAR is preferred and always supported.
-     *   Data is parsed inside Series::readIterations(), no data is available
-     *   right after opening the Series.
-     * * Otherwise (i.e. for random-access workflows), Access::READ_ONLY
-     *   is required, but works only in backends that support random access.
-     *   Data is parsed and available right after opening the Series.
-     *
-     * In both modes, parsing of iterations can be deferred with the JSON/TOML
-     * option `defer_iteration_parsing`.
-     *
-     * Detailed rules:
-     *
-     * 1. In backends that have no notion of IO steps (all except ADIOS2),
-     *    Access::READ_ONLY can always be used.
-     * 2. In backends that can be accessed either in random-access or
-     *    step-by-step, the chosen access mode decides which approach is used.
-     *    Examples are the BP4 and BP5 engines of ADIOS2.
-     * 3. In streaming backends, random-access is not possible.
-     *    When using such a backend, the access mode will be coerced
-     *    automatically to Access::READ_LINEAR. Use of Series::readIterations()
-     *    is mandatory for access.
-     * 4. Reading a variable-based Series is only fully supported with
-     *    Access::READ_LINEAR.
-     *    If using Access::READ_ONLY, the dataset will be considered to only
-     *    have one single step.
-     *    If the dataset only has one single step, this is guaranteed to work
-     *    as expected. Otherwise, it is undefined which step's data is returned.
-     */
-    READ_ONLY,
-    READ_RANDOM_ACCESS = READ_ONLY, //!< more explicit alias for READ_ONLY
-    /*
-     * Open Series as read-only, fails if Series is not found.
-     * This access mode requires use of Series::readIterations().
+     * This access mode requires use of Series::snapshots().
      * Global attributes are available directly after calling
-     * Series::readIterations(), Iterations and all their corresponding data
+     * Series::snapshots(), Iterations and all their corresponding data
      * become available by use of the returned Iterator, e.g. in a foreach loop.
-     * See Access::READ_ONLY for when to use this.
      */
-    READ_LINEAR,
+    READ_LINEAR = 1,
     /**
      * Open existing Series as writable.
-     * Read mode corresponds with Access::READ_RANDOM_ACCESS.
+     * Read mode corresponds with Access::READ_RANDOM_ACCESS, write mode with
+     * CREATE_RANDOM_ACCESS.
      */
-    READ_WRITE,
-    CREATE, //!< create new series and truncate existing (files)
-    APPEND //!< write new iterations to an existing series without reading
+    READ_WRITE = 2,
+    /** create new series and truncate existing (files)
+     */
+    CREATE_RANDOM_ACCESS = 3,
+    /** create new series and truncate existing (files)
+     */
+    CREATE_LINEAR = 4,
+    /** write new iterations to an existing series without reading
+     */
+    APPEND_RANDOM_ACCESS = 5,
+    /** write new iterations to an existing series without reading
+     */
+    APPEND_LINEAR = 6,
+    READ_RANDOM_ACCESS = READ_ONLY, //!< more explicit alias for READ_ONLY
+    CREATE = CREATE_RANDOM_ACCESS,
+    APPEND = APPEND_RANDOM_ACCESS
 }; // Access
 
 std::ostream &operator<<(std::ostream &o, Access const &a);
@@ -94,8 +100,10 @@ namespace access
         case Access::READ_ONLY:
             return true;
         case Access::READ_WRITE:
-        case Access::CREATE:
-        case Access::APPEND:
+        case Access::CREATE_RANDOM_ACCESS:
+        case Access::CREATE_LINEAR:
+        case Access::APPEND_RANDOM_ACCESS:
+        case Access::APPEND_LINEAR:
             return false;
         }
         throw std::runtime_error("Unreachable!");
@@ -114,8 +122,10 @@ namespace access
         case Access::READ_ONLY:
         case Access::READ_WRITE:
             return false;
-        case Access::CREATE:
-        case Access::APPEND:
+        case Access::CREATE_RANDOM_ACCESS:
+        case Access::CREATE_LINEAR:
+        case Access::APPEND_RANDOM_ACCESS:
+        case Access::APPEND_LINEAR:
             return true;
         }
         throw std::runtime_error("Unreachable!");
@@ -124,6 +134,65 @@ namespace access
     inline bool read(Access access)
     {
         return !writeOnly(access);
+    }
+
+    inline bool random_access(Access access)
+    {
+        switch (access)
+        {
+
+        case Access::READ_ONLY:
+        case Access::READ_WRITE:
+        case Access::CREATE_RANDOM_ACCESS:
+        case Access::APPEND_RANDOM_ACCESS:
+            return true;
+        case Access::READ_LINEAR:
+        case Access::CREATE_LINEAR:
+        case Access::APPEND_LINEAR:
+            return false;
+        }
+        throw std::runtime_error("Unreachable");
+    }
+
+    inline bool linear(Access access)
+    {
+        return !random_access(access);
+    }
+
+    inline bool append(Access access)
+    {
+        switch (access)
+        {
+
+        case Access::READ_ONLY:
+        case Access::READ_LINEAR:
+        case Access::READ_WRITE:
+        case Access::CREATE_RANDOM_ACCESS:
+        case Access::CREATE_LINEAR:
+            return false;
+        case Access::APPEND_RANDOM_ACCESS:
+        case Access::APPEND_LINEAR:
+            return true;
+        }
+        throw std::runtime_error("Unreachable");
+    }
+
+    inline bool create(Access access)
+    {
+        switch (access)
+        {
+
+        case Access::READ_ONLY:
+        case Access::READ_LINEAR:
+        case Access::READ_WRITE:
+        case Access::APPEND_RANDOM_ACCESS:
+        case Access::APPEND_LINEAR:
+            return false;
+        case Access::CREATE_RANDOM_ACCESS:
+        case Access::CREATE_LINEAR:
+            return true;
+        }
+        throw std::runtime_error("Unreachable");
     }
 } // namespace access
 

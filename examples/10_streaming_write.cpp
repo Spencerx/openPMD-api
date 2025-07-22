@@ -25,7 +25,12 @@ int main()
     // use QueueFullPolicy = Discard in order to create a situation where from
     // the reader's perspective steps are skipped. This tests the bug reported
     // in https://github.com/openPMD/openPMD-api/issues/1747.
-    Series series = Series("electrons.sst", Access::CREATE, R"(
+    // Create the Series with linear write access, i.e. one Iteration after
+    // the other. The alternative would be random-access where multiple
+    // Iterations can be accessed independently from one another. This more
+    // restricted mode enables performance optimizations in the backends, and
+    // more importantly is compatible with streaming I/O.
+    Series series = Series("electrons.sst", Access::CREATE_LINEAR, R"(
 {
   "adios2": {
     "engine": {
@@ -44,12 +49,7 @@ int main()
     std::shared_ptr<position_t> local_data(
         new position_t[length], [](position_t const *ptr) { delete[] ptr; });
 
-    // Create the Series with synchronous snapshots, i.e. one Iteration after
-    // the other. The alternative would be random-access where multiple
-    // Iterations can be accessed independently from one another. This more
-    // restricted mode enables performance optimizations in the backends, and
-    // more importantly is compatible with streaming I/O.
-    auto iterations = series.snapshots(SnapshotWorkflow::Synchronous);
+    auto iterations = series.snapshots();
     for (size_t i = 0; i < 100; ++i)
     {
         Iteration iteration = iterations[i];

@@ -104,14 +104,14 @@ void write_test_zero_extent(
         filePath += "_%07T";
     Series o = Series(
         filePath.append(".").append(file_ending),
-        Access::CREATE,
+        Access::CREATE_LINEAR,
         MPI_COMM_WORLD);
 
     int const max_step = 100;
 
     for (int step = 0; step <= max_step; step += 20)
     {
-        Iteration it = o.writeIterations()[step];
+        Iteration it = o.snapshots()[step];
         it.setAttribute("yolo", "yo");
 
         if (rank != 0 || declareFromAll)
@@ -474,13 +474,14 @@ void extendDataset(std::string const &ext, std::string const &jsonConfig)
     std::iota(data1.begin(), data1.end(), 0);
     std::iota(data2.begin(), data2.end(), 25);
     {
-        Series write(filename, Access::CREATE, MPI_COMM_WORLD, jsonConfig);
+        Series write(
+            filename, Access::CREATE_LINEAR, MPI_COMM_WORLD, jsonConfig);
         Dataset ds1{Datatype::INT, {mpi_size, 25}};
         Dataset ds2{{mpi_size, 50}};
 
         // array record component -> array record component
         // should work
-        auto E_x = write.writeIterations()[0].meshes["E"]["x"];
+        auto E_x = write.snapshots()[0].meshes["E"]["x"];
         E_x.resetDataset(ds1);
         E_x.storeChunk(data1, {mpi_rank, 0}, {1, 25});
         write.flush();
@@ -684,9 +685,9 @@ void write_4D_test(std::string const &file_ending)
     auto mpi_size = static_cast<uint64_t>(mpi_s);
     auto mpi_rank = static_cast<uint64_t>(mpi_r);
     std::string name = "../samples/parallel_write_4d." + file_ending;
-    Series o = Series(name, Access::CREATE, MPI_COMM_WORLD);
+    Series o = Series(name, Access::CREATE_LINEAR, MPI_COMM_WORLD);
 
-    auto it = o.writeIterations()[1];
+    auto it = o.snapshots()[1];
     auto E_x = it.meshes["E"]["x"];
 
     // every rank out of mpi_size MPI ranks contributes two writes:
@@ -719,9 +720,9 @@ void write_makeconst_some(std::string const &file_ending)
     auto mpi_rank = static_cast<uint64_t>(mpi_r);
     std::string name = "../samples/write_makeconst_some." + file_ending;
     std::cout << name << std::endl;
-    Series o = Series(name, Access::CREATE, MPI_COMM_WORLD);
+    Series o = Series(name, Access::CREATE_LINEAR, MPI_COMM_WORLD);
 
-    auto it = o.writeIterations()[1];
+    auto it = o.snapshots()[1];
     // I would have expected we need this, since the first call that writes
     // data below (makeConstant) is not executed in MPI collective manner
     // it.open();
@@ -1153,14 +1154,14 @@ TEST_CASE("independent_write_with_collective_flush", "[parallel]")
 {
     Series write(
         "../samples/independent_write_with_collective_flush.bp5",
-        Access::CREATE,
+        Access::CREATE_LINEAR,
         MPI_COMM_WORLD,
         "adios2.engine.preferred_flush_target = \"buffer\"");
     write.seriesFlush();
     int size, rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    auto iteration = write.writeIterations()[0];
+    auto iteration = write.snapshots()[0];
     auto E_x = iteration.meshes["E"]["x"];
     E_x.resetDataset({Datatype::DOUBLE, {10}});
     write.flush();
@@ -1203,7 +1204,7 @@ void adios2_streaming(bool variableBasedLayout)
         // write
         Series writeSeries(
             "../samples/adios2_stream.sst",
-            Access::CREATE,
+            Access::CREATE_LINEAR,
             variableBasedLayout
                 ? "adios2.engine.type = \"sst\""
                 : "adios2.engine.type = \"sst\"\niteration_encoding = "
@@ -1212,7 +1213,7 @@ void adios2_streaming(bool variableBasedLayout)
         {
             writeSeries.setIterationEncoding(IterationEncoding::variableBased);
         }
-        auto iterations = writeSeries.writeIterations();
+        auto iterations = writeSeries.snapshots();
         for (size_t i = 0; i < 10; ++i)
         {
             auto iteration = iterations[i];
@@ -1461,8 +1462,8 @@ void adios2_ssc()
     {
         // write
         Series writeSeries(
-            "../samples/adios2_stream.ssc", Access::CREATE, local_comm);
-        auto iterations = writeSeries.writeIterations();
+            "../samples/adios2_stream.ssc", Access::CREATE_LINEAR, local_comm);
+        auto iterations = writeSeries.snapshots();
         for (size_t i = 0; i < 10; ++i)
         {
             auto iteration = iterations[i];
@@ -1483,7 +1484,7 @@ void adios2_ssc()
             "../samples/adios2_stream.ssc", Access::READ_ONLY, local_comm);
 
         size_t last_iteration_index = 0;
-        for (auto iteration : readSeries.readIterations())
+        for (auto &[index, iteration] : readSeries.snapshots())
         {
             auto E_x = iteration.meshes["E"]["x"];
             REQUIRE(E_x.getDimensionality() == 2);
@@ -1495,9 +1496,9 @@ void adios2_ssc()
 
             for (size_t i = 0; i < extent; ++i)
             {
-                REQUIRE(chunk.get()[i] == int(iteration.iterationIndex));
+                REQUIRE(chunk.get()[i] == int(index));
             }
-            last_iteration_index = iteration.iterationIndex;
+            last_iteration_index = index;
         }
         REQUIRE(last_iteration_index == 9);
     }
@@ -1568,7 +1569,7 @@ void append_mode(
     MPI_Barrier(MPI_COMM_WORLD);
     std::vector<int> data(10, 999);
     auto writeSomeIterations = [&data, mpi_size, mpi_rank](
-                                   WriteIterations &&writeIterations,
+                                   Snapshots &&writeIterations,
                                    std::vector<uint64_t> const &indices) {
         for (auto index : indices)
         {
@@ -1581,7 +1582,8 @@ void append_mode(
         }
     };
     {
-        Series write(filename, Access::APPEND, MPI_COMM_WORLD, jsonConfig);
+        Series write(
+            filename, Access::APPEND_LINEAR, MPI_COMM_WORLD, jsonConfig);
         if (variableBased)
         {
             if (write.backend() != "ADIOS2")
@@ -1590,19 +1592,18 @@ void append_mode(
             }
             write.setIterationEncoding(IterationEncoding::variableBased);
         }
-        writeSomeIterations(
-            write.writeIterations(), std::vector<uint64_t>{0, 1});
+        writeSomeIterations(write.snapshots(), std::vector<uint64_t>{0, 1});
     }
     MPI_Barrier(MPI_COMM_WORLD);
     {
-        Series write(filename, Access::APPEND, MPI_COMM_WORLD, jsonConfig);
+        Series write(
+            filename, Access::APPEND_LINEAR, MPI_COMM_WORLD, jsonConfig);
         if (variableBased)
         {
             write.setIterationEncoding(IterationEncoding::variableBased);
         }
 
-        writeSomeIterations(
-            write.writeIterations(), std::vector<uint64_t>{3, 2});
+        writeSomeIterations(write.snapshots(), std::vector<uint64_t>{3, 2});
         write.flush();
     }
     MPI_Barrier(MPI_COMM_WORLD);
@@ -1614,26 +1615,26 @@ void append_mode(
          * we deal with it.
          */
         std::this_thread::sleep_for(1s);
-        Series write(filename, Access::APPEND, MPI_COMM_WORLD, jsonConfig);
+        Series write(
+            filename, Access::APPEND_LINEAR, MPI_COMM_WORLD, jsonConfig);
         if (variableBased)
         {
             write.setIterationEncoding(IterationEncoding::variableBased);
         }
 
-        writeSomeIterations(
-            write.writeIterations(), std::vector<uint64_t>{4, 3, 10});
+        writeSomeIterations(write.snapshots(), std::vector<uint64_t>{4, 3, 10});
         write.flush();
     }
     MPI_Barrier(MPI_COMM_WORLD);
     {
-        Series write(filename, Access::APPEND, MPI_COMM_WORLD, jsonConfig);
+        Series write(
+            filename, Access::APPEND_LINEAR, MPI_COMM_WORLD, jsonConfig);
         if (variableBased)
         {
             write.setIterationEncoding(IterationEncoding::variableBased);
         }
 
-        writeSomeIterations(
-            write.writeIterations(), std::vector<uint64_t>{7, 1, 11});
+        writeSomeIterations(write.snapshots(), std::vector<uint64_t>{7, 1, 11});
         write.flush();
     }
     MPI_Barrier(MPI_COMM_WORLD);
@@ -1656,9 +1657,9 @@ void append_mode(
             Series read(filename, Access::READ_LINEAR, MPI_COMM_WORLD);
             unsigned counter = 0;
             uint64_t iterationOrder[] = {0, 1, 2, 3, 4, 7, 10, 11};
-            for (auto iteration : read.readIterations())
+            for (auto &[index, iteration] : read.snapshots())
             {
-                REQUIRE(iteration.iterationIndex == iterationOrder[counter]);
+                REQUIRE(index == iterationOrder[counter]);
                 verifyIteration(iteration);
                 ++counter;
             }
@@ -1669,9 +1670,9 @@ void append_mode(
             Series read(filename, Access::READ_LINEAR, MPI_COMM_WORLD);
             unsigned counter = 0;
             uint64_t iterationOrder[] = {0, 1, 3, 4, 10, 11};
-            for (auto iteration : read.readIterations())
+            for (auto &[index, iteration] : read.snapshots())
             {
-                REQUIRE(iteration.iterationIndex == iterationOrder[counter]);
+                REQUIRE(index == iterationOrder[counter]);
                 verifyIteration(iteration);
                 ++counter;
             }
@@ -1684,9 +1685,9 @@ void append_mode(
             Series read(filename, Access::READ_LINEAR, MPI_COMM_WORLD);
             unsigned counter = 0;
             uint64_t iterationOrder[] = {0, 1, 3, 2, 4, 10, 7, 11};
-            for (auto iteration : read.readIterations())
+            for (auto &[index, iteration] : read.snapshots())
             {
-                REQUIRE(iteration.iterationIndex == iterationOrder[counter]);
+                REQUIRE(index == iterationOrder[counter]);
                 verifyIteration(iteration);
                 ++counter;
             }
@@ -1715,9 +1716,9 @@ void append_mode(
              * following: 1) A Series in which the iterations are present in
              * ascending order. 2) Or accessing the Series in READ_ONLY mode.
              */
-            for (auto const &iteration : read.readIterations())
+            for (auto const &[index, iteration] : read.snapshots())
             {
-                REQUIRE(iteration.iterationIndex == iterationOrder[counter]);
+                REQUIRE(index == iterationOrder[counter]);
                 ++counter;
             }
             REQUIRE(counter == 8);
@@ -1740,9 +1741,9 @@ void append_mode(
         REQUIRE(read.iterations.size() == 8);
         unsigned counter = 0;
         uint64_t iterationOrder[] = {0, 1, 2, 3, 4, 7, 10, 11};
-        for (auto iteration : read.readIterations())
+        for (auto &[index, iteration] : read.snapshots())
         {
-            REQUIRE(iteration.iterationIndex == iterationOrder[counter]);
+            REQUIRE(index == iterationOrder[counter]);
             verifyIteration(iteration);
             ++counter;
         }
@@ -1758,7 +1759,7 @@ void append_mode(
         {
             Series write(
                 filename,
-                Access::APPEND,
+                Access::APPEND_LINEAR,
                 MPI_COMM_WORLD,
                 json::merge(
                     jsonConfig,
@@ -1768,8 +1769,7 @@ void append_mode(
                 write.setIterationEncoding(IterationEncoding::variableBased);
             }
 
-            writeSomeIterations(
-                write.writeIterations(), std::vector<uint64_t>{4, 5});
+            writeSomeIterations(write.snapshots(), std::vector<uint64_t>{4, 5});
             write.flush();
         }
         MPI_Barrier(MPI_COMM_WORLD);
@@ -1782,10 +1782,9 @@ void append_mode(
             case ParseMode::LinearWithoutSnapshot: {
                 uint64_t iterationOrder[] = {0, 1, 3, 4, 10};
                 unsigned counter = 0;
-                for (auto iteration : read.readIterations())
+                for (auto &[index, iteration] : read.snapshots())
                 {
-                    REQUIRE(
-                        iteration.iterationIndex == iterationOrder[counter]);
+                    REQUIRE(index == iterationOrder[counter]);
                     verifyIteration(iteration);
                     ++counter;
                 }
@@ -1797,10 +1796,9 @@ void append_mode(
                 // of time but as they go
                 unsigned counter = 0;
                 uint64_t iterationOrder[] = {0, 1, 3, 2, 4, 10, 7, 5};
-                for (auto iteration : read.readIterations())
+                for (auto &[index, iteration] : read.snapshots())
                 {
-                    REQUIRE(
-                        iteration.iterationIndex == iterationOrder[counter]);
+                    REQUIRE(index == iterationOrder[counter]);
                     verifyIteration(iteration);
                     ++counter;
                 }
@@ -1818,9 +1816,9 @@ void append_mode(
             Series read(filename, Access::READ_ONLY, MPI_COMM_WORLD);
             uint64_t iterationOrder[] = {0, 1, 2, 3, 4, 5, 7, 10};
             unsigned counter = 0;
-            for (auto const &iteration : read.readIterations())
+            for (auto const &[index, iteration] : read.snapshots())
             {
-                REQUIRE(iteration.iterationIndex == iterationOrder[counter]);
+                REQUIRE(index == iterationOrder[counter]);
                 ++counter;
             }
             REQUIRE(counter == 8);
@@ -1941,11 +1939,11 @@ void joined_dim(std::string const &ext)
     {
         Series s(
             "../samples/joinedDimParallel_%T." + ext,
-            Access::CREATE,
+            Access::CREATE_LINEAR,
             MPI_COMM_WORLD);
         std::vector<UniquePtrWithLambda<type>> writeFrom(patches_per_rank);
 
-        auto it = s.writeIterations()[100];
+        auto it = s.snapshots()[100];
 
         Dataset numParticlesDS(
             determineDatatype<patchType>(), {Dataset::JOINED_DIMENSION});
@@ -2002,7 +2000,7 @@ void joined_dim(std::string const &ext)
         it.seriesFlush();
         it.close();
 
-        it = s.writeIterations()[200];
+        it = s.snapshots()[200];
 
         // Test issue fixed with
         // https://github.com/openPMD/openPMD-api/pull/1740
@@ -2114,13 +2112,13 @@ TEST_CASE("adios2_flush_via_step")
 
     Series write(
         "../samples/adios2_flush_via_step_parallel/simData_%T.bp5",
-        Access::CREATE,
+        Access::CREATE_LINEAR,
         MPI_COMM_WORLD,
         R"(adios2.engine.parameters.FlattenSteps = "on")");
     std::vector<float> data(10);
     for (Iteration::IterationIndex_t i = 0; i < 5; ++i)
     {
-        Iteration it = write.writeIterations()[i];
+        Iteration it = write.snapshots()[i];
         auto E_x = it.meshes["E"]["x"];
         E_x.resetDataset({Datatype::FLOAT, {size, 10, 10}});
         for (Extent::value_type j = 0; j < 10; ++j)
@@ -2142,12 +2140,9 @@ TEST_CASE("adios2_flush_via_step")
             MPI_COMM_WORLD);
         std::vector<float> load_data(100 * size);
         data.resize(100 * size);
-        for (auto iteration : read.readIterations())
+        for (auto &[index, iteration] : read.snapshots())
         {
-            std::iota(
-                data.begin(),
-                data.end(),
-                iteration.iterationIndex * size * 100);
+            std::iota(data.begin(), data.end(), index * size * 100);
             iteration.meshes["E"]["x"].loadChunkRaw(
                 load_data.data(), {0, 0, 0}, {size, 10, 10});
             iteration.close();
@@ -2168,7 +2163,7 @@ TEST_CASE("adios2_flush_via_step")
 
     write = Series(
         "../samples/adios2_flush_via_step_parallel/simData_%T.bp5",
-        Access::APPEND,
+        Access::APPEND_LINEAR,
         MPI_COMM_WORLD,
         R"(
             [adios2.engine]
@@ -2177,7 +2172,7 @@ TEST_CASE("adios2_flush_via_step")
         )");
     for (Iteration::IterationIndex_t i = 0; i < 5; ++i)
     {
-        Iteration it = write.writeIterations()[i];
+        Iteration it = write.snapshots()[i];
         auto E_x = it.meshes["E"]["y"];
         E_x.resetDataset({Datatype::FLOAT, {size, 10, 10}});
         for (Extent::value_type j = 0; j < 10; ++j)
@@ -2199,12 +2194,9 @@ TEST_CASE("adios2_flush_via_step")
             MPI_COMM_WORLD);
         std::vector<float> load_data(100 * size);
         data.resize(100 * size);
-        for (auto iteration : read.readIterations())
+        for (auto &[index, iteration] : read.snapshots())
         {
-            std::iota(
-                data.begin(),
-                data.end(),
-                iteration.iterationIndex * size * 100);
+            std::iota(data.begin(), data.end(), index * size * 100);
             iteration.meshes["E"]["x"].loadChunkRaw(
                 load_data.data(), {0, 0, 0}, {size, 10, 10});
             iteration.meshes["E"]["y"].loadChunkRaw(

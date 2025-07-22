@@ -14,7 +14,7 @@ if __name__ == "__main__":
     series = io.Series("../samples/git-sample/thetaMode/data%T.h5",
                        io.Access.read_only)
 
-    i = series.iterations[500]
+    i = series.snapshots()[500]
     E_z_modes = i.meshes["E"]["z"]
     shape = E_z_modes.shape  # (modal components, r, z)
 
@@ -55,7 +55,6 @@ if __name__ == "__main__":
 
     # The iteration can be closed in order to help free up resources.
     # The iteration's content will be flushed automatically.
-    # An iteration once closed cannot (yet) be reopened.
     # Alternatively, one can call `series.close()` to the same effect as
     # calling the destructor, including the release of file handles.
     i.close()

@@ -21,6 +21,7 @@
 #pragma once
 
 #include "openPMD/Iteration.hpp"
+#include "openPMD/snapshots/ContainerTraits.hpp"
 #include "openPMD/snapshots/IteratorTraits.hpp"
 
 #include <utility>
@@ -48,6 +49,15 @@ class RandomAccessIterator
 {
 private:
     friend class RandomAccessIteratorContainer;
+    template <typename>
+    friend class OpaqueSeriesIterator;
+    template <
+        typename ConcreteIteratorClass,
+        typename ValueType,
+        typename... ConstructorArgs>
+    friend auto from_concrete_iterator(ConstructorArgs &&...args)
+        -> OpaqueSeriesIterator<ValueType>;
+
     using parent_t = AbstractSeriesIterator<
         RandomAccessIterator<iterator_t>,
         detail::iterator_to_value_type<iterator_t>>;

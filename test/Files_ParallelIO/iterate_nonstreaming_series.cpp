@@ -121,8 +121,12 @@ static auto run_test(
         size_t last_iteration_index = 0;
         // conventionally written Series must be readable with streaming-aware
         // API!
-        for (auto iteration : readSeries.readIterations())
+        for (auto &[index, iteration] : readSeries.snapshots())
         {
+            if (access == Access::READ_RANDOM_ACCESS)
+            {
+                iteration.open();
+            }
             // ReadIterations takes care of Iteration::open()ing iterations
             auto E_x = iteration.meshes["E"]["x"];
             REQUIRE(E_x.getDimensionality() == 2);
@@ -141,13 +145,13 @@ static auto run_test(
                 iteration.close();
             }
 
-            int value = variableBasedLayout ? 0 : iteration.iterationIndex;
+            int value = variableBasedLayout ? 0 : index;
             for (size_t i = 0; i < extent; ++i)
             {
                 REQUIRE(chunk.get()[i] == value);
                 REQUIRE(chunk2.get()[i] == int(i % base_extent));
             }
-            last_iteration_index = iteration.iterationIndex;
+            last_iteration_index = index;
         }
         REQUIRE(last_iteration_index == 9);
     }

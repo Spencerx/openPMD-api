@@ -14,12 +14,13 @@ if __name__ == "__main__":
     print("Read a Series with openPMD standard version %s" %
           series.openPMD)
 
-    print("The Series contains {0} iterations:".format(len(series.iterations)))
-    for i in series.iterations:
+    print("The Series contains {0} iterations:".format(
+        len(series.snapshots())))
+    for i in series.snapshots():
         print("\t {0}".format(i))
     print("")
 
-    i = series.iterations[100]
+    i = series.snapshots()[100]
     print("Iteration 100 contains {0} meshes:".format(len(i.meshes)))
     for m in i.meshes:
         print("\t {0}".format(m))
@@ -64,7 +65,6 @@ if __name__ == "__main__":
 
     # The iteration can be closed in order to help free up resources.
     # The iteration's content will be flushed automatically.
-    # An iteration once closed cannot (yet) be reopened.
     i.close()
     print("Full E/x is of shape {0} and starts with:".format(all_data.shape))
     print(all_data[0, 0, :5])

@@ -20,20 +20,13 @@ if __name__ == "__main__":
 
     # create a series and specify some global metadata
     # change the file extension to .json, .h5 or .bp for regular file writing
-    series = io.Series("simData.sst", io.Access_Type.create, config)
+    series = io.Series("simData.sst", io.Access_Type.create_linear, config)
     series.set_author("Franz Poeschel <f.poeschel@hzdr.de>")
     series.set_software("openPMD-api-python-examples")
 
     # now, write a number of iterations (or: snapshots, time steps)
     for i in range(10):
-        # Direct access to iterations is possible via `series.iterations`.
-        # For streaming support, `series.write_iterations()` needs to be used
-        # instead of `series.iterations`.
-        # `Series.write_iterations()` and `Series.read_iterations()` are
-        # intentionally restricted APIs that ensure a workflow which also works
-        # in streaming setups, e.g. an iteration cannot be opened again once
-        # it has been closed.
-        iteration = series.write_iterations()[i]
+        iteration = series.snapshots()[i]
 
         #######################
         # write electron data #

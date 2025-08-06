@@ -1,0 +1,137 @@
+type = "object"
+required = ["attributes", "data"]
+title = "Series"
+description = "The root group in the hierarchical openPMD standard."
+
+#########################################################
+# Requirement 1: Basic layout of the root path (Series) #
+#########################################################
+
+[[allOf]]
+title = "Basic Series layout"
+
+#####################
+# Series attributes #
+#####################
+
+[allOf.properties.attributes]
+title = "Attributes"
+
+################################################
+# Requirement 1.1: standard-defined attributes #
+################################################
+
+[[allOf.properties.attributes.allOf]]
+required = [
+    "openPMD",
+    "openPMDextension",
+    "basePath",
+    "iterationEncoding",
+    "iterationFormat",
+]
+title = "Series attributes"
+description = "Standard-defined attributes at the Series level."
+
+[allOf.properties.attributes.allOf.properties]
+
+author."$ref"               = "attribute_defs.json#/$defs/string_attribute"
+comment."$ref"              = "attribute_defs.json#/$defs/string_attribute"
+date."$ref"                 = "attribute_defs.json#/$defs/string_attribute"
+openPMD."$ref"              = "attribute_defs.json#/$defs/string_attribute"
+iterationEncoding."$ref"    = "attribute_defs.json#/$defs/string_attribute"
+softwareVersion."$ref"      = "attribute_defs.json#/$defs/string_attribute"
+basePath."$ref"             = "attribute_defs.json#/$defs/string_attribute"
+iterationFormat."$ref"      = "attribute_defs.json#/$defs/string_attribute"
+openPMDextension."$ref"     = "attribute_defs.json#/$defs/int_attribute"
+software."$ref"             = "attribute_defs.json#/$defs/string_attribute"
+machine."$ref"              = "attribute_defs.json#/$defs/string_attribute"
+softwareDependencies."$ref" = "attribute_defs.json#/$defs/string_attribute"
+
+meshesPath.description = "Note that the meshesPath is hardcoded as its semantics are impossible to model in a JSON schema."
+meshesPath.oneOf = [
+    { const = { value = "meshes/", datatype = "STRING" } },
+    { const = "meshes/" },
+]
+
+particlesPath.description = "Note that the particlesPath is hardcoded as its semantics are impossible to model in a JSON schema."
+particlesPath.oneOf = [
+    { const = { value = "particles/", datatype = "STRING" } },
+    { const = "particles/" },
+]
+
+#################################################
+# Requirement 1.2: General layout of attributes #
+#################################################
+
+[[allOf.properties.attributes.allOf]]
+title = "Attribute layout"
+"$ref" = "attributes.json"
+
+#################################################
+# Requirement 2: The Series contains iterations #
+#################################################
+
+[[allOf]]
+title = "Contains iterations"
+
+#########################################################################
+# Requirement 2.1: Either a single iteration in variable-based encoding #
+#########################################################################
+
+[allOf.if]
+properties.attributes.properties.iterationEncoding.oneOf = [
+    { const = { value = "variableBased", datatype = "STRING" } },
+    { const = "variableBased" },
+]
+
+[allOf.then]
+title = "Variable-based encoding"
+properties.attributes.properties.iterationEncoding.properties.value = { const = "variableBased" }
+
+[allOf.then.properties.data]
+type = "object"
+title = "An iteration"
+description = "A single iteration."
+
+# Only require iteration data if snapshot attribute is defined
+[allOf.then.properties.data.if]
+required = ["attributes"]
+properties.attributes.required = ["snapshot"]
+
+[allOf.then.properties.data.then]
+"$ref" = "iteration.json"
+
+############################################################################
+# Requirement 2.2: Or multiple iterations in group- or file-based encoding #
+############################################################################
+
+[allOf.else]
+title = "Group-based (or file-based) encoding"
+properties.attributes.properties.iterationEncoding = { oneOf = [
+    { const = "groupBased" },
+    { const = "fileBased" },
+    { const = { value = "groupBased", datatype = "STRING" } },
+    { const = { value = "fileBased", datatype = "STRING" } },
+] }
+
+# Base Path
+
+[allOf.else.properties.data]
+type = "object"
+title = "Base path"
+description = "A map of all iterations/snapshots in the Series."
+
+propertyNames.pattern = "^(-?[0-9]*|attributes)$"
+
+[allOf.else.properties.data.properties]
+
+[allOf.else.properties.data.properties.attributes]
+title = "Attribute layout"
+description = "Custom attributes allowed, no required attributes defined."
+"$ref" = "attributes.json"
+
+# Base Path -> Iterations
+
+[allOf.else.properties.data.patternProperties."^-?[0-9]*$"]
+title = "Iteration"
+"$ref" = "iteration.json"

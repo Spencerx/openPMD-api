@@ -1303,14 +1303,20 @@ void Series::flushFileBased(
     bool flushIOHandler)
 {
     auto &series = get();
-    /*
-     * Iterations might have been present, but have been closed and deleted from
-     * internal structures. In this case, previous flushes were successful and
-     * the Series is now in written() state.
-     */
-    if (end == begin && !written())
+    if (end == begin &&
+        /*
+         * At parsing time, this might happen since iterations might contain
+         * errors and be deleted.
+         */
+        IOHandler()->m_seriesStatus != internal::SeriesStatus::Parsing &&
+        /*
+         * Iterations might have been present, but have been closed and deleted
+         * from internal structures. In this case, previous flushes were
+         * successful and the Series is now in written() state.
+         */
+        !written())
     {
-        throw std::runtime_error(
+        throw error::WrongAPIUsage(
             "fileBased output can not be written with no iterations.");
     }
 
@@ -1429,7 +1435,6 @@ void Series::flushGorVBased(
     bool flushIOHandler)
 {
     auto &series = get();
-
     if (access::readOnly(IOHandler()->m_frontendAccess))
     {
         for (auto it = begin; it != end; ++it)

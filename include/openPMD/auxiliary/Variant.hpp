@@ -20,6 +20,7 @@
  */
 #pragma once
 
+#include <any>
 #include <cstddef>
 #include <type_traits>
 #include <variant> // IWYU pragma: export
@@ -35,7 +36,7 @@ namespace auxiliary
      * @tparam T        Varaidic template argument list of datatypes to be
      * stored.
      */
-    template <class T_DTYPES, typename std_variant>
+    template <class T_DTYPES, typename... variant_types>
     class Variant
     {
         static_assert(
@@ -43,35 +44,50 @@ namespace auxiliary
             "Datatypes to Variant must be supplied as enum.");
 
     public:
-        using resource = std_variant;
+        struct from_basic_type_tag
+        {};
+        static constexpr from_basic_type_tag from_basic_type =
+            from_basic_type_tag{};
+        struct from_any_tag
+        {};
+        static constexpr from_any_tag from_any = from_any_tag{};
+        template <typename U>
+        Variant(from_basic_type_tag, U);
+
+        Variant(from_any_tag, std::any);
+
         /** Construct a lightweight wrapper around a generic object that
          * indicates the concrete datatype of the specific object stored.
          *
          * @note    Gerneric objects can only generated implicitly if their
          * datatype is contained in T_DTYPES.
-         * @param   r   Generic object to be stored.
+         * @param   u   Generic object to be stored.
          */
-        Variant(resource r) : dtype{static_cast<T_DTYPES>(r.index())}, m_data{r}
-        {}
+        template <typename U>
+        Variant(U u);
 
         /** Retrieve a stored specific object of known datatype with ensured
          * type-safety.
          *
-         * @throw   std::bad_variant_access if stored object is not of type U.
+         * @throw   std::bad_variant_access if stored object is not of type
+         * U.
          * @tparam  U   Type of the object to be retrieved.
          * @return  Copy of the retrieved object of type U.
          */
         template <typename U>
-        U get() const
-        {
-            return std::get<U>(m_data);
-        }
+        [[nodiscard]] U const &get() const;
 
         /** Retrieve the stored generic object.
          *
          * @return  Copy of the stored generic object.
          */
-        resource getResource() const
+        template <typename variant_t>
+        [[nodiscard]] variant_t const &getVariant() const
+        {
+            return *std::any_cast<variant_t>(&m_data);
+        }
+
+        [[nodiscard]] std::any const &getAny() const
         {
             return m_data;
         }
@@ -80,15 +96,12 @@ namespace auxiliary
          *
          * @return  zero-based index
          */
-        constexpr size_t index() const noexcept
-        {
-            return m_data.index();
-        }
+        [[nodiscard]] size_t index() const;
 
         T_DTYPES dtype;
 
     private:
-        resource m_data;
+        std::any m_data;
     };
 
     /*

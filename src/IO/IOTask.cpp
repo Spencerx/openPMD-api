@@ -19,9 +19,11 @@
  * If not, see <http://www.gnu.org/licenses/>.
  */
 #include "openPMD/IO/IOTask.hpp"
+#include "openPMD/DatatypeMacros.hpp"
 #include "openPMD/auxiliary/JSONMatcher.hpp"
 #include "openPMD/auxiliary/JSON_internal.hpp"
 #include "openPMD/backend/Attributable.hpp"
+#include "openPMD/backend/Variant_internal.hpp"
 
 #include <iostream> // std::cerr
 #include <utility>
@@ -226,4 +228,83 @@ IOTask::IOTask(IOTask &&) noexcept = default;
 
 IOTask &IOTask::operator=(IOTask const &) = default;
 IOTask &IOTask::operator=(IOTask &&) noexcept = default;
+
+template <typename variant_t>
+variant_t const &Parameter<Operation::READ_ATT>::resource() const
+{
+    if (!m_resource->has_value())
+    {
+        *m_resource = std::make_any<variant_t>();
+    }
+    return *std::any_cast<variant_t>(&*m_resource);
+}
+template attribute_types const &
+Parameter<Operation::READ_ATT>::resource<attribute_types>() const;
+
+template <typename T>
+void Parameter<Operation::READ_ATT>::setResource(T val)
+{
+    *m_resource =
+        std::make_any<attribute_types>(attribute_types{std::move(val)});
+}
+
+template <typename variant_t>
+variant_t const &Parameter<Operation::WRITE_ATT>::resource() const
+{
+    return *std::any_cast<variant_t>(&m_resource);
+}
+template attribute_types const &
+Parameter<Operation::WRITE_ATT>::resource<attribute_types>() const;
+
+template <typename T>
+void Parameter<Operation::WRITE_ATT>::setResource(T val)
+{
+    m_resource =
+        std::make_any<attribute_types>(attribute_types{std::move(val)});
+}
+
+template <typename variant_t>
+variant_t const &Parameter<Operation::READ_ATT_ALLSTEPS>::resource() const
+{
+    if (!m_resource->has_value())
+    {
+        *m_resource = std::make_any<variant_t>();
+    }
+    return *std::any_cast<variant_t>(&*m_resource);
+}
+template vector_of_attributes_type const &
+Parameter<Operation::READ_ATT_ALLSTEPS>::resource<vector_of_attributes_type>()
+    const;
+
+template <typename variant_t>
+variant_t &Parameter<Operation::READ_ATT_ALLSTEPS>::resource()
+{
+    if (!m_resource->has_value())
+    {
+        *m_resource = std::make_any<variant_t>();
+    }
+    return *std::any_cast<variant_t>(&*m_resource);
+}
+
+// ?????
+#ifndef DOXYGEN_SHOULD_SKIP_THIS
+template vector_of_attributes_type &
+Parameter<Operation::READ_ATT_ALLSTEPS>::resource<vector_of_attributes_type>();
+#endif
+
+template <typename T>
+void Parameter<Operation::READ_ATT_ALLSTEPS>::setResource(std::vector<T> val)
+{
+    *m_resource = std::make_any<vector_of_attributes_type>(
+        vector_of_attributes_type{std::move(val)});
+}
+
+#define OPENPMD_INSTANTIATE(type)                                              \
+    template void Parameter<Operation::READ_ATT_ALLSTEPS>::setResource<type>(  \
+        std::vector<type>);                                                    \
+    template void Parameter<Operation::READ_ATT>::setResource<type>(type val); \
+    template void Parameter<Operation::WRITE_ATT>::setResource<type>(type val);
+
+OPENPMD_FOREACH_DATATYPE(OPENPMD_INSTANTIATE)
+#undef OPENPMD_INSTANTIATE
 } // namespace openPMD

@@ -1,3 +1,24 @@
+/* Copyright 2024-2025 Franz Poeschel
+ *
+ * This file is part of openPMD-api.
+ *
+ * openPMD-api is free software: you can redistribute it and/or modify
+ * it under the terms of of either the GNU General Public License or
+ * the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * openPMD-api is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License and the GNU Lesser General Public License
+ * for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * and the GNU Lesser General Public License along with openPMD-api.
+ * If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #pragma once
 
 #include <functional>
@@ -34,24 +55,9 @@ namespace auxiliary
          * Default constructor: Use std::default_delete<T>.
          * This ensures correct destruction of arrays by using delete[].
          */
-        CustomDelete()
-            : deleter_type{[]([[maybe_unused]] T_decayed *ptr) {
-                if constexpr (std::is_void_v<T_decayed>)
-                {
-                    std::cerr << "[Warning] Cannot standard-delete a void-type "
-                                 "pointer. Please specify a custom destructor. "
-                                 "Will let the memory leak."
-                              << std::endl;
-                }
-                else
-                {
-                    std::default_delete<T>{}(ptr);
-                }
-            }}
-        {}
+        CustomDelete();
 
-        CustomDelete(deleter_type func) : deleter_type(std::move(func))
-        {}
+        CustomDelete(deleter_type func);
     };
 } // namespace auxiliary
 
@@ -84,25 +90,40 @@ private:
 public:
     using T_decayed = std::remove_extent_t<T>;
 
-    UniquePtrWithLambda() = default;
+    UniquePtrWithLambda();
 
-    UniquePtrWithLambda(UniquePtrWithLambda &&) = default;
-    UniquePtrWithLambda &operator=(UniquePtrWithLambda &&) = default;
+    UniquePtrWithLambda(UniquePtrWithLambda &&) noexcept;
+    UniquePtrWithLambda &operator=(UniquePtrWithLambda &&) noexcept;
 
     UniquePtrWithLambda(UniquePtrWithLambda const &) = delete;
     UniquePtrWithLambda &operator=(UniquePtrWithLambda const &) = delete;
 
     /**
      * Conversion constructor from std::unique_ptr<T> with default deleter.
+     *
+     * @tparam bare_unique_ptr Equal to std::unique_ptr<T>. Needs to be a
+     *         template parameter since we cannot instantiate
+     *         std::unique_ptr<void>.
+     * @tparam SFINAE Used to ensure that bare_unique_ptr actually is
+     *         std::unique_ptr<T>.
      */
-    UniquePtrWithLambda(std::unique_ptr<T>);
+    template <
+        typename bare_unique_ptr,
+        typename SFINAE = std::enable_if_t<
+            std::is_same_v<bare_unique_ptr, std::unique_ptr<T>>>>
+    UniquePtrWithLambda(bare_unique_ptr);
 
     /**
      * Conversion constructor from std::unique_ptr<T> with custom deleter.
      *
      * @tparam Del Custom deleter type.
+     * @tparam SFINAE Used to not compete with the std::unique_ptr<T>
+     *         constructor (without custom deleter).
      */
-    template <typename Del>
+    template <
+        typename Del,
+        typename SFINAE = std::enable_if_t<
+            !std::is_same_v<std::unique_ptr<T, Del>, std::unique_ptr<T>>>>
     UniquePtrWithLambda(std::unique_ptr<T, Del>);
 
     /**
@@ -127,12 +148,7 @@ public:
 };
 
 template <typename T>
-UniquePtrWithLambda<T>::UniquePtrWithLambda(std::unique_ptr<T> stdPtr)
-    : BasePtr{stdPtr.release()}
-{}
-
-template <typename T>
-template <typename Del>
+template <typename Del, typename>
 UniquePtrWithLambda<T>::UniquePtrWithLambda(std::unique_ptr<T, Del> ptr)
     : BasePtr{ptr.release(), auxiliary::CustomDelete<T>{[&]() {
                   if constexpr (std::is_copy_constructible_v<Del>)
@@ -153,16 +169,6 @@ UniquePtrWithLambda<T>::UniquePtrWithLambda(std::unique_ptr<T, Del> ptr)
                                  T_decayed *del_ptr) { (*deleter)(del_ptr); };
                   }
               }()}}
-{}
-
-template <typename T>
-UniquePtrWithLambda<T>::UniquePtrWithLambda(T_decayed *ptr) : BasePtr{ptr}
-{}
-
-template <typename T>
-UniquePtrWithLambda<T>::UniquePtrWithLambda(
-    T_decayed *ptr, std::function<void(T_decayed *)> deleter)
-    : BasePtr{ptr, std::move(deleter)}
 {}
 
 template <typename T>

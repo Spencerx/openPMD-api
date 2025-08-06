@@ -41,6 +41,7 @@
 #include "openPMD/auxiliary/StringManip.hpp"
 #include "openPMD/auxiliary/TypeTraits.hpp"
 #include "openPMD/auxiliary/Variant.hpp"
+#include "openPMD/backend/Variant_internal.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -1343,12 +1344,7 @@ void ADIOS2IOHandlerImpl::readAttribute(
     }
 
     Datatype ret = switchType<detail::AttributeReader>(
-        type,
-        ba.currentStep(),
-        ba.m_IO,
-        name,
-        *parameters.resource,
-        ba.attributes());
+        type, ba.currentStep(), ba.m_IO, name, parameters, ba.attributes());
     *parameters.dtype = ret;
 }
 
@@ -1486,10 +1482,11 @@ namespace
             std::vector<detail::PreloadAdiosAttributes> const &preload,
             adios2::IO &IO,
             std::string const &name,
-            Parameter<Operation::READ_ATT_ALLSTEPS>::result_type
-                &put_result_here)
+            Parameter<Operation::READ_ATT_ALLSTEPS> &put_result_here)
         {
-            auto &res = put_result_here.emplace<std::vector<T>>();
+            put_result_here.setResource(std::vector<T>{});
+            auto &res = std::get<std::vector<T>>(
+                put_result_here.resource<vector_of_attributes_type>());
             res.reserve(preload.size());
             for (auto const &p : preload)
             {
@@ -1657,7 +1654,7 @@ void ADIOS2IOHandlerImpl::readAttributeAllsteps(
     }
 #endif
     auto &attributes = ba.attributes();
-    switchType<ReadAttributeAllsteps>(type, preload, IO, name, *param.resource);
+    switchType<ReadAttributeAllsteps>(type, preload, IO, name, param);
     attributes.m_data = std::move(preload);
 }
 
@@ -2209,12 +2206,12 @@ namespace detail
         size_t step,
         adios2::IO &IO,
         std::string name,
-        Attribute::resource &resource,
+        Parameter<Operation::READ_ATT> &param,
         detail::AdiosAttributes const &attributes)
     {
         return genericReadAttribute<T>(
-            [&resource](auto &&value) {
-                resource = static_cast<decltype(value)>(value);
+            [&param](auto &&value) {
+                param.setResource(static_cast<decltype(value)>(value));
             },
             IO,
             name,
@@ -2265,7 +2262,9 @@ namespace detail
                     return it != filedata.uncommittedAttributes.end();
                 };
                 if (AttributeTypes<T>::attributeUnchanged(
-                        IO, fullName, std::get<T>(parameters.resource)))
+                        IO,
+                        fullName,
+                        std::get<T>(parameters.resource<attribute_types>())))
                 {
                     return;
                 }
@@ -2312,7 +2311,7 @@ namespace detail
             }
         }
 
-        auto &value = std::get<T>(parameters.resource);
+        auto &value = std::get<T>(parameters.resource<attribute_types>());
         bool modifiable = impl->m_modifiableAttributes ==
                 ADIOS2IOHandlerImpl::ModifiableAttributes::Yes ||
             parameters.changesOverSteps !=

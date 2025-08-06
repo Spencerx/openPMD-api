@@ -409,9 +409,15 @@ set(CORE_SOURCE
         src/auxiliary/Filesystem.cpp
         src/auxiliary/JSON.cpp
         src/auxiliary/JSONMatcher.cpp
+        src/auxiliary/Memory.cpp
         src/auxiliary/Mpi.cpp
+        src/auxiliary/UniquePtr.cpp
+        src/auxiliary/Variant.cpp
         src/backend/Attributable.cpp
+        src/backend/Attribute.cpp
+        src/backend/BaseRecord.cpp
         src/backend/BaseRecordComponent.cpp
+        src/backend/Container.cpp
         src/backend/MeshRecordComponent.cpp
         src/backend/PatchRecord.cpp
         src/backend/PatchRecordComponent.cpp

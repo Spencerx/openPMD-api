@@ -10,6 +10,7 @@ License: LGPLv3+
 """
 import argparse
 import os  # os.path.basename
+import re
 import sys  # sys.stderr.write
 
 from .. import openpmd_api_cxx as io
@@ -39,8 +40,14 @@ are fulfilled:
    By default, the openPMD-api will be initialized without an MPI communicator
    if the MPI size is 1. This is to simplify the use of the JSON backend
    which is only available in serial openPMD.
-With parallelization enabled, each dataset will be equally sliced along
-the dimension with the largest extent.
+With parallelization enabled, each dataset will be equally sliced according to
+a chunk distribution strategy which may be selected via the environment
+variable OPENPMD_CHUNK_DISTRIBUTION. Options include "roundrobin",
+"binpacking", "slicedataset" and "hostname_<1>_<2>", where <1> should be
+replaced with a strategy to be applied within a compute node and <2> with a
+secondary strategy in case the hostname strategy does not distribute
+all chunks.
+The default is `hostname_binpacking_slicedataset`.
 
 Examples:
     {0} --infile simData.h5 --outfile simData_%T.bp
@@ -99,71 +106,190 @@ class FallbackMPICommunicator:
         self.rank = 0
 
 
-class Chunk:
-    """
-    A Chunk is an n-dimensional hypercube, defined by an offset and an extent.
-    Offset and extent must be of the same dimensionality (Chunk.__len__).
-    """
-    def __init__(self, offset, extent):
-        assert (len(offset) == len(extent))
-        self.offset = offset
-        self.extent = extent
-
-    def __len__(self):
-        return len(self.offset)
-
-    def slice1D(self, mpi_rank, mpi_size, dimension=None):
-        """
-        Slice this chunk into mpi_size hypercubes along one of its
-        n dimensions. The dimension is given through the 'dimension'
-        parameter. If None, the dimension with the largest extent on
-        this hypercube is automatically picked.
-        Returns the mpi_rank'th of the sliced chunks.
-        """
-        if dimension is None:
-            # pick that dimension which has the highest count of items
-            dimension = 0
-            maximum = self.extent[0]
-            for k, v in enumerate(self.extent):
-                if v > maximum:
-                    dimension = k
-        assert (dimension < len(self))
-        # no offset
-        assert (self.offset == [0 for _ in range(len(self))])
-        offset = [0 for _ in range(len(self))]
-        stride = self.extent[dimension] // mpi_size
-        rest = self.extent[dimension] % mpi_size
-
-        # local function f computes the offset of a rank
-        # for more equal balancing, we want the start index
-        # at the upper gaussian bracket of (N/n*rank)
-        # where N the size of the dataset in dimension dim
-        # and n the MPI size
-        # for avoiding integer overflow, this is the same as:
-        # (N div n)*rank + round((N%n)/n*rank)
-        def f(rank):
-            res = stride * rank
-            padDivident = rest * rank
-            pad = padDivident // mpi_size
-            if pad * mpi_size < padDivident:
-                pad += 1
-            return res + pad
-
-        offset[dimension] = f(mpi_rank)
-        extent = self.extent.copy()
-        if mpi_rank >= mpi_size - 1:
-            extent[dimension] -= offset[dimension]
-        else:
-            extent[dimension] = f(mpi_rank + 1) - offset[dimension]
-        return Chunk(offset, extent)
-
-
 class deferred_load:
     def __init__(self, source, dynamicView, offset, extent):
         self.source = source
         self.dynamicView = dynamicView
         self.offset = offset
         self.extent = extent
+
+# Find below a couple of examples on how to define chunk distribution
+# strategies in Python by extending classes PartialStrategy or Strategy.
+# These strategies may then be used inside composing strategies
+# such as ByHostname. They may also call other strategies, as in
+# IncreaseGranularity defined below.
+
+
+# Example how to implement a simple partial strategy in Python
+class LoadOne(io.PartialStrategy):
+    def __init__(self):
+        super().__init__()
+
+    def assign(self, assignment, ranks_in, ranks_out, my_rank, num_ranks):
+        element = assignment.not_assigned.pop()
+        if my_rank not in assignment.assigned:
+            assignment.assigned[my_rank] = [element]
+        else:
+            assignment.assigned[my_rank].append(element)
+        return assignment
+
+
+# Example how to implement a simple strategy in Python
+class LoadAll(io.Strategy):
+
+    def __init__(self):
+        super().__init__()
+
+    def assign(self, assignment, ranks_in, ranks_out, my_rank, num_ranks):
+        res = assignment.assigned
+        if my_rank not in res:
+            res[my_rank] = assignment.not_assigned
+        else:
+            res[my_rank].extend(assignment.not_assigned)
+        return res
+
+
+# A more complex distribution strategy. This creates supergroups of hostnames,
+# separately for the writer and reader ranks.
+# Every `granularity_in` writer hostnames are merged into one new hostname
+# each, same for every `granularity_out` reader hostnames.
+# An example usage is defining granularity_in=32, granularity_out=1 for a
+# 32-to-1 fan-in pattern.
+class IncreaseGranularity(io.PartialStrategy):
+    def __init__(
+        self,
+        granularity_in,
+        granularity_out,
+        inner_distribution,
+    ):
+        super().__init__()
+        self.inner_distribution = inner_distribution
+        self.granularity_in = granularity_in
+        self.granularity_out = granularity_out
+
+    def assign(self, assignment, in_ranks, out_ranks, my_rank, num_ranks):
+        if "in_ranks_inner" in dir(self):
+            return self.inner_distribution.assign(
+                assignment, self.in_ranks_inner, self.out_ranks_inner
+            )
+
+        def hosts_in_order(rank_assignment):
+            already_seen = set()
+            res = []
+            for (_, hostname) in rank_assignment.items():
+                if hostname not in already_seen:
+                    already_seen.add(hostname)
+                    res.append(hostname)
+            return res
+
+        in_hosts_in_order = hosts_in_order(in_ranks)
+        out_hosts_in_order = hosts_in_order(out_ranks)
+
+        # Creates names "0", "1", "2", ... for the meta hosts and maps the real
+        # host names to the meta host names
+        def hostname_to_hostgroup(ordered_hosts, granularity):
+            res = {}  # real host -> host group
+            current_meta_host = 0
+            granularity_counter = 0
+            for host in ordered_hosts:
+                res[host] = str(current_meta_host)
+                granularity_counter += 1
+                if granularity_counter >= granularity:
+                    granularity_counter = 0
+                    current_meta_host += 1
+            return res
+
+        in_hostname_to_hostgroup = hostname_to_hostgroup(
+            in_hosts_in_order, self.granularity_in
+        )
+        out_hostname_to_hostgroup = hostname_to_hostgroup(
+            out_hosts_in_order, self.granularity_out
+        )
+
+        # Creates `in_ranks` and `out_ranks` for the inner call, based on the
+        # meta hosts created above
+        def inner_rank_assignment(
+                outer_rank_assignment, hostname_to_hostgroup):
+            res = {}
+            for (rank, hostname) in outer_rank_assignment.items():
+                res[rank] = hostname_to_hostgroup[hostname]
+            return res
+
+        self.in_ranks_inner = \
+            inner_rank_assignment(in_ranks, in_hostname_to_hostgroup)
+        self.out_ranks_inner = inner_rank_assignment(
+            out_ranks, out_hostname_to_hostgroup
+        )
+
+        return self.inner_distribution.assign(
+            assignment,
+            self.in_ranks_inner, self.out_ranks_inner,
+            my_rank, num_ranks
+        )
+
+
+# Merge chunks into larger chunks as much as possible within
+# each source process for reducing the number of load requests.
+class MergingStrategy(io.Strategy):
+    def __init__(self, inner_strategy):
+        super().__init__()
+        self.inner_strategy = inner_strategy
+
+    def assign(self, assignment, in_ranks, out_ranks, my_rank, num_ranks):
+        res = self.inner_strategy.assign(
+            assignment, in_ranks, out_ranks, my_rank, num_ranks)
+        for out_rank, assignment in res.items():
+            merged = assignment.merge_chunks_from_same_sourceID()
+            assignment.clear()
+            for in_rank, chunks in merged.items():
+                for chunk in chunks:
+                    assignment.append(
+                        io.WrittenChunkInfo(
+                            chunk.offset, chunk.extent, in_rank)
+                    )
+        return res
+
+
+def distribution_strategy(dataset_extent,
+                          strategy_identifier=None):
+    if strategy_identifier is None or not strategy_identifier:
+        if 'OPENPMD_CHUNK_DISTRIBUTION' in os.environ:
+            strategy_identifier = os.environ[
+                'OPENPMD_CHUNK_DISTRIBUTION'].lower()
+        else:
+            strategy_identifier = 'hostname_binpacking_slicedataset'  # default
+    match = re.search('hostname_(.*)_(.*)', strategy_identifier)
+    if match is not None:
+        inside_node = distribution_strategy(
+            dataset_extent, strategy_identifier=match.group(1))
+        second_phase = distribution_strategy(
+            dataset_extent,
+            strategy_identifier=match.group(2))
+        return io.FromPartialStrategy(io.ByHostname(inside_node), second_phase)
+    elif strategy_identifier == 'fan_in':
+        granularity = os.environ['OPENPMD_FAN_IN']
+        granularity = int(granularity)
+        return IncreaseGranularity(
+            granularity, 1,
+            io.FromPartialStrategy(io.ByHostname(io.RoundRobin()),
+                                   io.DiscardingStrategy()))
+    elif strategy_identifier == 'all':
+        return io.FromPartialStrategy(IncreaseGranularity(5), LoadAll())
+    elif strategy_identifier == 'roundrobin':
+        return io.RoundRobin()
+    elif strategy_identifier == 'binpacking':
+        return io.BinPacking()
+    elif strategy_identifier == 'slicedataset':
+        return io.ByCuboidSlice(io.OneDimensionalBlockSlicer(), dataset_extent)
+    elif strategy_identifier == 'fail':
+        return io.FailingStrategy()
+    elif strategy_identifier == 'discard':
+        return io.DiscardingStrategy()
+    elif strategy_identifier == 'blocksofsourceranks':
+        return io.BlocksOfSourceRanks()
+    else:
+        raise RuntimeError("Unknown distribution strategy: " +
+                           strategy_identifier)
 
 
 class pipe:
@@ -177,6 +303,11 @@ class pipe:
         self.outconfig = outconfig
         self.loads = []
         self.comm = comm
+        if HAVE_MPI:
+            hostinfo = io.HostInfo.MPI_PROCESSOR_NAME
+            self.outranks = hostinfo.get_collective(self.comm)
+        else:
+            self.outranks = {i: str(i) for i in range(self.comm.size)}
 
     def run(self):
         if not HAVE_MPI or (args.mpi is None and self.comm.size == 1):
@@ -268,6 +399,9 @@ class pipe:
                         print("With records:")
                         for r in in_iteration.particles[ps]:
                             print("\t {0}".format(r))
+                # With linear read mode, we can only load the source rank table
+                # inside `read_iterations()` since it's a dataset.
+                self.inranks = src.get_rank_table(collective=True)
                 out_iteration = write_iterations[in_iteration.iteration_index]
                 sys.stdout.flush()
                 self.__copy(
@@ -284,7 +418,6 @@ class pipe:
         elif isinstance(src, io.Record_Component) and (not is_container
                                                        or src.scalar):
             shape = src.shape
-            offset = [0 for _ in shape]
             dtype = src.dtype
             dest.reset_dataset(io.Dataset(dtype, shape))
             if src.empty:
@@ -294,19 +427,24 @@ class pipe:
             elif src.constant:
                 dest.make_constant(src.get_attribute("value"))
             else:
-                chunk = Chunk(offset, shape)
-                local_chunk = chunk.slice1D(self.comm.rank, self.comm.size)
-                if debug:
-                    end = local_chunk.offset.copy()
-                    for i in range(len(end)):
-                        end[i] += local_chunk.extent[i]
-                    print("{}\t{}/{}:\t{} -- {}".format(
-                        current_path, self.comm.rank, self.comm.size,
-                        local_chunk.offset, end))
-                span = dest.store_chunk(local_chunk.offset, local_chunk.extent)
-                self.loads.append(
-                    deferred_load(src, span, local_chunk.offset,
-                                  local_chunk.extent))
+                chunk_table = src.available_chunks()
+                # todo buffer the strategy
+                strategy = distribution_strategy(shape)
+                my_chunks = strategy.assign(chunk_table, self.inranks,
+                                            self.outranks,
+                                            self.comm.rank, self.comm.size)
+                for chunk in my_chunks[
+                        self.comm.rank] if self.comm.rank in my_chunks else []:
+                    if debug:
+                        end = chunk.offset.copy()
+                        for i in range(len(end)):
+                            end[i] += chunk.extent[i]
+                        print("{}\t{}/{}:\t{} -- {}".format(
+                            current_path, self.comm.rank, self.comm.size,
+                            chunk.offset, end))
+                    span = dest.store_chunk(chunk.offset, chunk.extent)
+                    self.loads.append(
+                        deferred_load(src, span, chunk.offset, chunk.extent))
         elif isinstance(src, io.Iteration):
             self.__copy(src.meshes, dest.meshes, current_path + "meshes/")
             self.__copy(src.particles, dest.particles,

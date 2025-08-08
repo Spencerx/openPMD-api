@@ -3,6 +3,8 @@
 #define OPENPMD_private public:
 #define OPENPMD_protected public:
 #endif
+
+#include "openPMD/ChunkInfo.hpp"
 #include "openPMD/openPMD.hpp"
 
 #include "Files_Core/CoreTests.hpp"
@@ -20,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <numeric>
 #include <sstream>
 // cstdlib does not have setenv
 #include <stdlib.h> // NOLINT(modernize-deprecated-headers)
@@ -44,6 +47,196 @@
 using namespace openPMD;
 
 Dataset globalDataset(Datatype::CHAR, {1});
+
+namespace test_chunk_assignment
+{
+using namespace openPMD::chunk_assignment;
+struct Params
+{
+    ChunkTable table;
+    RankMeta metaSource;
+    RankMeta metaSink;
+
+    void init(
+        size_t sourceRanks,
+        size_t sinkRanks,
+        size_t in_per_host,
+        size_t out_per_host)
+    {
+        for (size_t rank = 0; rank < sourceRanks; ++rank)
+        {
+            table.emplace_back(Offset{rank, rank}, Extent{rank, rank}, rank);
+            table.emplace_back(
+                Offset{rank, 100 * rank}, Extent{rank, 100 * rank}, rank);
+            metaSource.emplace(rank, std::to_string(rank / in_per_host));
+        }
+        for (size_t rank = 0; rank < sinkRanks; ++rank)
+        {
+            metaSink.emplace(rank, std::to_string(rank / out_per_host));
+        }
+    }
+};
+
+static constexpr bool verbose = false;
+void print(RankMeta const &meta, ChunkTable const &table)
+{
+    if (!verbose)
+    {
+        return;
+    }
+    for (auto const &chunk : table)
+    {
+        std::cout << "[HOST: " << meta.at(chunk.sourceID)
+                  << ",\tRank: " << chunk.sourceID << ",\tOffset: ";
+        for (auto offset : chunk.offset)
+        {
+            std::cout << offset << ", ";
+        }
+        std::cout << "\tExtent: ";
+        for (auto extent : chunk.extent)
+        {
+            std::cout << extent << ", ";
+        }
+        std::cout << "]" << std::endl;
+    }
+}
+void print(RankMeta const &meta, Assignment const &table)
+{
+    if (!verbose)
+    {
+        return;
+    }
+    for (auto &[rank, chunkList] : table)
+    {
+        std::cout << "[HOST: " << meta.at(rank) << ",\tRank: " << rank << "]"
+                  << std::endl;
+        for (auto const &chunk : chunkList)
+        {
+            std::cout << "\t[From " << chunk.sourceID << "\tOffset: ";
+            for (auto offset : chunk.offset)
+            {
+                std::cout << offset << ", ";
+            }
+            std::cout << "\tExtent: ";
+            for (auto extent : chunk.extent)
+            {
+                std::cout << extent << ", ";
+            }
+            std::cout << "]" << std::endl;
+        }
+    }
+}
+
+static auto add = [](size_t left, size_t right) { return left + right; };
+auto mergeTable(ChunkTable const &chunkTable) -> ChunkTable const &
+{
+    return chunkTable;
+}
+auto mergeTable(chunk_assignment::Assignment const &assignment) -> ChunkTable
+{
+    ChunkTable merged;
+    merged.reserve(
+        std::transform_reduce(
+            assignment.begin(),
+            assignment.end(),
+            0u,
+            add,
+            [](chunk_assignment::Assignment::value_type const &pair) {
+                return pair.second.size();
+            }));
+    for (auto const &pair : assignment)
+    {
+        for (auto const &chunk : pair.second)
+        {
+            merged.insert(merged.end(), chunk);
+        }
+    }
+    return merged;
+}
+auto mergeTable(chunk_assignment::PartialAssignment const &assignment)
+{
+    auto const &[not_assigned, assigned] = assignment;
+    ChunkTable merged = mergeTable(assigned);
+    merged.reserve(merged.size() + not_assigned.size());
+    for (auto const &chunk : not_assigned)
+    {
+        merged.insert(merged.end(), chunk);
+    }
+    return merged;
+}
+
+template <typename ChunkTable1, typename ChunkTable2>
+auto equalTables(ChunkTable1 &&availableChunks, ChunkTable2 &&assignedChunks)
+{
+    return chunk_assignment::mergeChunksFromSameSourceID(
+               mergeTable(availableChunks)) ==
+        chunk_assignment::mergeChunksFromSameSourceID(
+               mergeTable(assignedChunks));
+}
+
+void verifyHostnameAssignment(
+    chunk_assignment::PartialAssignment const &assignment,
+    chunk_assignment::RankMeta const &in,
+    chunk_assignment::RankMeta const &out)
+{
+    REQUIRE(!assignment.assigned.empty());
+    for (auto const &[out_rank, chunks] : assignment.assigned)
+    {
+        for (auto const &chunk : chunks)
+        {
+            REQUIRE(in.at(chunk.sourceID) == out.at(out_rank));
+        }
+    }
+    for (auto const &chunk : assignment.notAssigned)
+    {
+        auto const &hostname = in.at(chunk.sourceID);
+        OPENPMD_REQUIRE_GUARD_WINDOWS(
+            std::none_of(
+                out.begin(),
+                out.end(),
+                [&hostname](
+                    chunk_assignment::RankMeta::value_type const &pair) {
+                    return pair.second == hostname;
+                }));
+    }
+}
+} // namespace test_chunk_assignment
+
+TEST_CASE("chunk_assignment", "[core]")
+{
+    using namespace chunk_assignment;
+    test_chunk_assignment::Params params;
+    params.init(6, 2, 2, 1);
+    test_chunk_assignment::print(params.metaSource, params.table);
+    ByHostname byHostname(std::make_unique<RoundRobin>());
+
+    PartialAssignment partial_res0 = byHostname.assign(
+        params.table, params.metaSource, params.metaSink, 0, 2);
+    PartialAssignment partial_res1 = byHostname.assign(
+        params.table, params.metaSource, params.metaSink, 0, 2);
+
+    OPENPMD_REQUIRE_GUARD_WINDOWS(
+        partial_res0.notAssigned == partial_res1.notAssigned);
+    PartialAssignment partial_res{
+        partial_res0.notAssigned,
+        {{0, partial_res0.assigned[0]}, {1, partial_res1.assigned[1]}}};
+    test_chunk_assignment::verifyHostnameAssignment(
+        partial_res, params.metaSource, params.metaSink);
+
+    FromPartialStrategy fullStrategy(
+        std::make_unique<ByHostname>(std::move(byHostname)),
+        std::make_unique<BinPacking>());
+    Assignment res0 = fullStrategy.assign(
+        params.table, params.metaSource, params.metaSink, 0, 2);
+    Assignment res1 = fullStrategy.assign(
+        params.table, params.metaSource, params.metaSink, 1, 2);
+    Assignment res = {{0, res0[0]}, {1, res1[1]}};
+
+    OPENPMD_REQUIRE_GUARD_WINDOWS(
+        test_chunk_assignment::equalTables(params.table, res));
+
+    test_chunk_assignment::print(params.metaSink, res1);
+}
 
 TEST_CASE("versions_test", "[core]")
 {

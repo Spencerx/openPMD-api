@@ -422,7 +422,7 @@ set(CORE_SOURCE
         src/backend/PatchRecord.cpp
         src/backend/PatchRecordComponent.cpp
         src/backend/Writable.cpp
-        src/benchmark/mpi/OneDimensionalBlockSlicer.cpp
+        src/auxiliary/OneDimensionalBlockSlicer.cpp
         src/helper/list_series.cpp
         src/snapshots/ContainerImpls.cpp
         src/snapshots/ContainerTraits.cpp
@@ -1346,30 +1346,30 @@ if(openPMD_BUILD_TESTING)
                 )
                 add_test(NAME CLI.pipe.py
                     COMMAND sh -c
-                        "${MPI_TEST_EXE} ${Python_EXECUTABLE}                      \
-                            ${openPMD_RUNTIME_OUTPUT_DIRECTORY}/openpmd-pipe       \
-                            --infile ../samples/git-sample/data%T.h5               \
-                            --outfile ../samples/git-sample/data%T.bp &&           \
-                                                                                   \
-                        ${MPI_TEST_EXE} ${Python_EXECUTABLE}                       \
-                            ${openPMD_RUNTIME_OUTPUT_DIRECTORY}/openpmd-pipe       \
-                            --infile ../samples/git-sample/data00000100.h5         \
-                            --outfile                                              \
-                                ../samples/git-sample/single_iteration_%T.bp &&    \
-                                                                                   \
-                        ${MPI_TEST_EXE} ${Python_EXECUTABLE}                       \
-                            ${openPMD_RUNTIME_OUTPUT_DIRECTORY}/openpmd-pipe       \
-                            --infile ../samples/git-sample/thetaMode/data%T.h5     \
-                            --outfile                                              \
-                                ../samples/git-sample/thetaMode/data_%T.bp &&      \
-                                                                                   \
-                        ${MPI_TEST_EXE} ${Python_EXECUTABLE}                       \
-                            ${openPMD_RUNTIME_OUTPUT_DIRECTORY}/openpmd-pipe       \
-                            --infile ../samples/git-sample/thetaMode/data_%T.bp    \
-                            --outfile ../samples/git-sample/thetaMode/data%T.json  \
-                            --outconfig '                                          \
-                                json.attribute.mode = \"short\"                  \n\
-                                json.dataset.mode = \"template_no_warn\"'          \
+                        "${MPI_TEST_EXE} ${MPIEXEC_NUMPROC_FLAG} 2 ${Python_EXECUTABLE} \
+                            ${openPMD_RUNTIME_OUTPUT_DIRECTORY}/openpmd-pipe            \
+                            --infile ../samples/git-sample/data%T.h5                    \
+                            --outfile ../samples/git-sample/data%T.bp &&                \
+                                                                                        \
+                        ${MPI_TEST_EXE} ${Python_EXECUTABLE}                            \
+                            ${openPMD_RUNTIME_OUTPUT_DIRECTORY}/openpmd-pipe            \
+                            --infile ../samples/git-sample/data00000100.h5              \
+                            --outfile                                                   \
+                                ../samples/git-sample/single_iteration_%T.bp &&         \
+                                                                                        \
+                        ${MPI_TEST_EXE} ${MPIEXEC_NUMPROC_FLAG} 2 ${Python_EXECUTABLE}  \
+                            ${openPMD_RUNTIME_OUTPUT_DIRECTORY}/openpmd-pipe            \
+                            --infile ../samples/git-sample/thetaMode/data%T.h5          \
+                            --outfile                                                   \
+                                ../samples/git-sample/thetaMode/data_%T.bp &&           \
+                                                                                        \
+                        ${MPI_TEST_EXE} ${Python_EXECUTABLE}                            \
+                            ${openPMD_RUNTIME_OUTPUT_DIRECTORY}/openpmd-pipe            \
+                            --infile ../samples/git-sample/thetaMode/data_%T.bp         \
+                            --outfile ../samples/git-sample/thetaMode/data%T.json       \
+                            --outconfig '                                               \
+                                json.attribute.mode = \"short\"                       \n\
+                                json.dataset.mode = \"template_no_warn\"'               \
                         "
                     WORKING_DIRECTORY ${openPMD_RUNTIME_OUTPUT_DIRECTORY}
                 )

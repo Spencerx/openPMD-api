@@ -185,8 +185,8 @@ Explanation of the single keys:
   Additionally, specifying ``"disk_override"``, ``"buffer_override"`` or ``"new_step_override"`` will take precedence over options specified without the ``_override`` suffix, allowing to invert the normal precedence order.
   This way, a data producing code can hardcode the preferred flush target per ``flush()`` call, but users can e.g. still entirely deactivate flushing to disk in the ``Series`` constructor by specifying ``preferred_flush_target = buffer_override``.
   This is useful when applying the asynchronous IO capabilities of the BP5 engine.
-* ``adios2.dataset.operators``: This key contains a list of ADIOS2 `operators <https://adios2.readthedocs.io/en/latest/components/components.html#operator>`_, used to enable compression or dataset transformations.
-  Each object in the list has two keys:
+* ``adios2.dataset.operators``: This key contains either a single ADIOS2 `operator <https://adios2.readthedocs.io/en/latest/components/components.html#operator>`_ or a list of operators, used to enable compression or dataset transformations.
+  Each operator is an object with two keys:
 
   * ``type`` supported ADIOS operator type, e.g. zfp, sz
   * ``parameters`` is an associative map of string parameters for the operator (e.g. compression levels)
@@ -247,6 +247,24 @@ Explanation of the single keys:
   An explicit chunk size can be specified as a list of positive integers, e.g. ``hdf5.dataset.chunks = [10, 100]``. Note that this specification should only be used per-dataset, e.g. in ``resetDataset()``/``reset_dataset()``.
 
   Chunking generally improves performance and only needs to be disabled in corner-cases, e.g. when heavily relying on independent, parallel I/O that non-collectively declares data records.
+* ``hdf5.datasets.permanent_filters``: Either a single HDF5 permanent filter specification or a list of HDF5 permanent filter specifications.
+  Each filter specification is a JSON/TOML object, but there are multiple options:
+
+  * Zlib: The Zlib filter has a distinct API in HDF5 and the configuration for Zlib in openPMD is hence also different. It is activated by the mandatory key ``type = "zlib"`` and configured by the optional integer key ``aggression``.
+    Example: ``{"type": "zlib", "aggression": 5}``.
+  * Filters identified by their global ID `registered with the HDF group <https://github.com/HDFGroup/hdf5_plugins/blob/master/docs/RegisteredFilterPlugins.md>`_.
+    They are activated by the mandatory integer key ``id`` containing this global ID.
+    All other keys are optional:
+
+    * ``type = "by_id"`` may optionally be specified for clarity and consistency.
+    * The string key ``flags`` can take the values ``"mandatory"`` or ``"optional"``, indicating if HDF5 should abort execution if the filter cannot be applied for some reason.
+    * The key ``cd_values`` points to a list of nonnegative integers.
+      These are filter-specific configuration options.
+      Refer to the specific filter's documentation.
+
+    Alternatively to an integer ID, the key ``id`` may also be of string type, identifying one of the six builtin filters of HDF5: ``"deflate", "shuffle", "fletcher32", "szip", "nbit", "scaleoffset"``.
+
+
 * ``hdf5.vfd.type`` selects the HDF5 virtual file driver.
   Currently available are:
 

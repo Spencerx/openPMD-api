@@ -718,6 +718,7 @@ set(openPMD_EXAMPLE_NAMES
     12_span_write
     13_write_dynamic_configuration
     14_toml_template
+    15_compression
 )
 set(openPMD_PYTHON_EXAMPLE_NAMES
     2_read_serial
@@ -734,6 +735,7 @@ set(openPMD_PYTHON_EXAMPLE_NAMES
     11_particle_dataframe
     12_span_write
     13_write_dynamic_configuration
+    15_compression
 )
 
 if(openPMD_USE_INVASIVE_TESTS)

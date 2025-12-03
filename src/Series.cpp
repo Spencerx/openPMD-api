@@ -32,6 +32,7 @@
 #include "openPMD/IterationEncoding.hpp"
 #include "openPMD/ThrowError.hpp"
 #include "openPMD/auxiliary/Date.hpp"
+#include "openPMD/auxiliary/Environment.hpp"
 #include "openPMD/auxiliary/Filesystem.hpp"
 #include "openPMD/auxiliary/JSON_internal.hpp"
 #include "openPMD/auxiliary/Mpi.hpp"
@@ -48,6 +49,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <exception>
 #include <iomanip>
 #include <iostream>
@@ -126,6 +128,79 @@ namespace
         int padding,
         std::string const &postfix,
         std::optional<std::string> const &extension);
+
+    struct TimeoutLazyParsing
+    {
+        using Clock = std::chrono::system_clock;
+        Clock::time_point start_parsing, time_of_last_warning;
+        uint64_t timeout;
+        bool printed_warning_already = false;
+
+        TimeoutLazyParsing(uint64_t timeout_in) : timeout(timeout_in)
+        {
+            if (timeout > 0)
+            {
+                start_parsing = Clock::now();
+                time_of_last_warning = start_parsing;
+            }
+        }
+
+        void now(size_t current_iteration_count, size_t total_iteration_count)
+        {
+            if (timeout == 0)
+            {
+                return;
+            }
+            auto current = Clock::now();
+            auto diff = std::chrono::duration_cast<std::chrono::seconds>(
+                current - time_of_last_warning);
+            if (uint64_t(diff.count()) >= timeout)
+            {
+                auto total_diff =
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        current - start_parsing);
+                if (!printed_warning_already)
+                {
+                    std::cerr << &R"END(
+[openPMD] WARNING: Parsing Iterations is taking a long time.
+Consider using deferred Iteration parsing in order to open the Series lazily.
+This can be achieved by either setting an environment variable:
+
+> export OPENPMD_DEFER_ITERATION_PARSING=1
+
+Or by specifying it as part of a JSON/TOML configuration:
+
+> // C++:
+> Series simData("my_data_%T.%E", R"({"defer_iteration_parsing": true})");
+> // Python:
+> simData = opmd.Series("my_data_%T.%E", {"defer_iteration_parsing": True})
+
+Iterations will then be parsed only upon explicit user request:
+
+> series.snapshots()[100].open()  // new API
+> series.iterations[100].open()   // old API
+
+Alternatively, Iterations will be opened implicitly when iterating in
+READ_LINEAR access mode.
+Refer also to the documentation at https://openpmd-api.readthedocs.io
+
+This warning can be suppressed also by either specifying
+an environment variable:
+
+> export OPENPMD_HINT_LAZY_PARSING_TIMEOUT=0
+
+Or by the JSON/TOML option {"hint_lazy_parsing_timeout": 0}.
+)END"[1] << '\n';
+                    printed_warning_already = true;
+                }
+                std::cerr << "Elapsed time: " << total_diff.count()
+                          << "s, parsed " << current_iteration_count << " of "
+                          << total_iteration_count << " Iterations."
+                          << std::endl;
+                time_of_last_warning = current;
+            }
+        }
+    };
 } // namespace
 
 struct Series::ParsedInput
@@ -1757,12 +1832,20 @@ void Series::readFileBased(
     {
         bool atLeastOneIterationSuccessful = false;
         std::optional<error::ReadError> forwardFirstError;
+
+        TimeoutLazyParsing timeout(series.m_hintLazyParsingAfterTimeout);
+
+        size_t read_iterations = 0;
         for (auto &iteration : series.iterations)
         {
             if (read_only_this_single_iteration.has_value() &&
                 *read_only_this_single_iteration != iteration.first)
             {
                 continue;
+            }
+            if (!read_only_this_single_iteration.has_value())
+            {
+                timeout.now(read_iterations, iterations.size());
             }
             if (auto error = readIterationEagerly(iteration.second); error)
             {
@@ -1779,6 +1862,7 @@ void Series::readFileBased(
             {
                 atLeastOneIterationSuccessful = true;
             }
+            ++read_iterations;
         }
         if (!atLeastOneIterationSuccessful)
         {
@@ -2157,6 +2241,10 @@ creating new iterations.
 
     auto currentSteps = currentSnapshot();
 
+    TimeoutLazyParsing timeout{
+        series.m_parseLazily ? 0 : series.m_hintLazyParsingAfterTimeout};
+    size_t parsed_iterations = 0;
+
     switch (iterationEncoding())
     {
     case IterationEncoding::groupBased:
@@ -2174,6 +2262,10 @@ creating new iterations.
                 index != *read_only_this_single_iteration)
             {
                 continue;
+            }
+            if (!read_only_this_single_iteration.has_value())
+            {
+                timeout.now(parsed_iterations, pList.paths->size());
             }
             if (auto err = internal::withRWAccess(
                     IOHandler()->m_seriesStatus,
@@ -2198,6 +2290,7 @@ creating new iterations.
             {
                 readableIterations.push_back(index);
             }
+            ++parsed_iterations;
         }
         if (currentSteps.has_value())
         {
@@ -2254,6 +2347,10 @@ creating new iterations.
 
         for (auto it : *currentSteps)
         {
+            if (!read_only_this_single_iteration.has_value())
+            {
+                timeout.now(parsed_iterations, pList.paths->size());
+            }
             /*
              * Variable-based iteration encoding relies on steps, so parsing
              * must happen after opening the first step.
@@ -2281,6 +2378,7 @@ creating new iterations.
                  */
                 throw *err;
             }
+            ++parsed_iterations;
         }
         return *currentSteps;
     }
@@ -2982,9 +3080,18 @@ namespace
      * If yes, read it into the specified location.
      */
     template <typename From, typename Dest = From>
-    void
-    getJsonOption(json::TracingJSON &config, std::string const &key, Dest &dest)
+    void getJsonOption(
+        json::TracingJSON &config,
+        std::string const &key,
+        Dest &dest,
+        std::optional<std::string> envVar = std::nullopt)
     {
+        if (envVar.has_value())
+        {
+            dest = auxiliary::getEnvNum(*envVar, dest);
+            std::cout << "Read from env var " << *envVar << " as: " << dest
+                      << std::endl;
+        }
         if (config.json().contains(key))
         {
             dest = config[key].json().get<From>();
@@ -3027,7 +3134,15 @@ void Series::parseJsonOptions(TracingJSON &options, ParsedInput &input)
 {
     auto &series = get();
     getJsonOption<bool>(
-        options, "defer_iteration_parsing", series.m_parseLazily);
+        options,
+        "defer_iteration_parsing",
+        series.m_parseLazily,
+        "OPENPMD_DEFER_ITERATION_PARSING");
+    getJsonOption<uint64_t>(
+        options,
+        "hint_lazy_parsing_timeout",
+        series.m_hintLazyParsingAfterTimeout,
+        "OPENPMD_HINT_LAZY_PARSING_TIMEOUT");
     internal::SeriesData::SourceSpecifiedViaJSON rankTableSource;
     if (getJsonOptionLowerCase(options, "rank_table", rankTableSource.value))
     {

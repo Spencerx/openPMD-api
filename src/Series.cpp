@@ -3089,8 +3089,6 @@ namespace
         if (envVar.has_value())
         {
             dest = auxiliary::getEnvNum(*envVar, dest);
-            std::cout << "Read from env var " << *envVar << " as: " << dest
-                      << std::endl;
         }
         if (config.json().contains(key))
         {

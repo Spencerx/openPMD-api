@@ -71,3 +71,13 @@ jobs:
         #exclude_patterns: url1,url2
         # choose if the force pass or not
         force_pass : true
+
+  rodare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate Zenodo Metadata
+        uses: ax3l/zenodo-validator@custom-extra-prop
+        with:
+          path: '.rodare.json'
+          allowed_extra_properties: 'pub_id'  # HZDR Pub-ID linked to RODARE entries

@@ -3,16 +3,156 @@
 Changelog
 =========
 
-0.16.0
+0.17.0
 ------
+**Date:** 2025-01-14
 
-Changes to "0.15.0"
+Unified Snapshots API, HDF5 Compression, Dataset-Specific Backend Configuration, fully supported Variable Encoding in ADIOS2, Chunk Distribution Strategies & Performance
+
+This release unifies the Streaming API and the Random-Access File API into a unified Snapshots API, with improved support for lazy parsing.
+Filtering and compression features are now also available for HDF5 (previously only ADIOS2), configured via JSON/TOML.
+JSON/TOML configuration can now target individual datasets for an improved tuning of compression operations.
+Variable Encoding is now fully supported in ADIOS2 (one ADIOS2 step per Iteration), as an alternative for File Encoding (one file per Iteration).
+Advanced chunk distribution strategies are now available in the API and in ``openpmd-pipe`` for data organization in parallel read operations.
+Multiple performance optimizations have been added throughout.
+
+
+Changes to "0.16.1"
 ^^^^^^^^^^^^^^^^^^^
+
+Features
+""""""""
+
+- API:
+
+  - Unify Random-Access API and Streaming API into ``Series::snapshots()``, support reopening closed Iterations (#1592 #1810)
+  - Dataset-specific JSON/TOML configuration (#1646)
+  - Add a selection of chunk distribution algorithms for parallel data access (including RoundRobin, Blocks, BlocksOfSourceRanks, ByHostname, DiscardingStrategy) to the API and to ``openpmd-pipe`` (#824)
+- HDF5:
+
+  - HDF5 2.0.0 support (#1812)
+  - HDF5 filters (compression) with JSON/TOML configuration, C++ and Python examples for compression (#1644)
+  - Support for opening scalar datasets (#1764)
+- ADIOS2:
+
+  - ADIOS2 v2.11 support (#1804)
+  - Support reading variable encoding in random access mode (using step selection) (#1706 #1750)
+  - Support reading variable-encoded datasets with changing metadata (partial datasets, modifiable attributes) (#1746)
+  - Allow only up to 100 steps by default in BP5 group encoding (performance consideration) (#1732)
+- JSON/TOML IO backends:
+
+  - JSON/TOML: Abbreviated IO modes (#1493)
+- Performance:
+
+  - Performance optimizations for interacting with many meshes/species types (#1741)
+  - C++ API: optimized include times (#1774)
+  - Improve flushing performance for file-based Series with many steps (#1642)
+- Python:
+
+  - DataFrame: Add attribute columns (#1814)
+- Miscellaneous:
+
+  - Add JSON schema for openPMD file validation, introduce openpmd-convert-toml-json tool (#1426)
+  - Experimental support for openPMD standard 2.0 (#1551)
+  - Non-spatial meshes (in standard 2.0) (#1534)
+  - Optional shape in constant components (#1661)
+  - Stderr hints for lazy parsing when appropriate (#1802 #1816)
+  - storeChunk: use const-type pointers (#1778)
+  - Span API: use ``std::unique_ptr`` in default fallback (#1820)
+  - Pickle API: Cache unpickled Series to avoid repeated file access (#1654)
+  - Fix license headers (#1819)
+
+Bug Fixes
+"""""""""
+
+- ADIOS2:
+
+  - Deactivate Span API in BP5 up to ADIOS2 v2.10.2 (#1771)
+  - Fix propagation of joined dimension to the backend (#1740)
+  - Fix late ``unique_ptr`` puts without ``CLOSE_FILE`` or ``ADVANCE`` operations (#1744)
+  - Fix double write from ``unique_ptr`` (#1743)
+  - Fix hangup with ``writeIterations()`` (#1728)
+  - Always use ``CurrentStep()`` in ``mode::Read``, fixing nonstandard SST workflows (#1749)
+
+- JSON/TOML IO backend:
+
+  - Remove unnecessary ``putJsonContents()`` calls (#1782)
+  - Fix uninitialized values (#1745)
+- Python:
+
+  - Fix reference counting (#1775)
+  - Type conversions for Series constructor (#1737)
+  - Support for zero-sized storeChunk in Span API Python (#1738)
+- General:
+
+  - Fix missing check for constant components (#1776)
+  - Fixes for deferred initialization (#1777)
+  - Remove leftover debugging messages (#1816)
+  - Fix Variant issue with certain CUDA versions (#1722 #1807)
+  - Fix behavior of ``Iteration::open()`` for correct use of Span API (#1794)
+  - ``iterator::operator==`` fix for C++20 (#1798)
+  - Fix a couple of false positive warnings (#1806 #1824)
+  - Safeguards for ``READ_LINEAR`` mode (#1753)
+  - Fix & simplify ``BaseRecord::erase`` (#1841)
 
 Other
 """""
 
-- ADIOS2: require version 2.9.0 #1711
+- CMake:
+
+  - Skip ``MPICXX`` dependency (#1785)
+- CI/Infrastructure:
+
+  - Upgrade to macOS-14 (#1808)
+  - Upgrade Musllinux runner to Ubuntu 24.04 (#1795)
+  - Upgrade Nvidia Nvhpc runner to 25.9 (#1811)
+  - Clang Tidy and Sanitizer: Use clang-19 on Ubuntu 24.04 (#1783)
+  - Update CodeQL action to v4 (#1790)
+  - Support for new CMake versions (#1742)
+  - Various pre-commit updates
+  - Move Ubuntu 20.04 workflows to 22.04 (#1731)
+- Documentation:
+
+  - Update streaming documentation to snapshots API (#1773)
+  - Doc: First Write with explicit ``float64`` type (#1780)
+  - WarpX repo update (#1733)
+  - Link code examples to current version instead of ``dev`` (#1821)
+
+
+0.16.1
+------
+**Date:** 2025-01-15
+
+New Backends, Extension, Perf. & Memory
+
+This is the 0.16.0 release but with internal version bumps where they were missing.
+
+Changes to "0.16.0"
+^^^^^^^^^^^^^^^^^^^
+
+Bug Fixes
+"""""""""
+
+- HDF5: Delete and re-create attribute when overwriting with diff. type #1697
+- TOUCH IOTask: Avoid setting files as dirty in non-write modes #1704
+- Fix CMake variables for controlling internal dependencies #1678
+- Bump toml11 dependency to ``v4.2.0`` by default #1679
+- Set ``PYBIND11_FINDPYTHON=ON`` #1684
+- Properly check for empty ``HDF5_VERSION`` in CMake #1702
+- Fix ICX build #1690
+- Explicitly specify ADIOS2 components in openPMDConfig.cmake #1693
+- Example 12: Use ``ULONG`` for particle patches #1710
+
+Other
+"""""
+
+- Replace deprecated Python unittest API call #1681
+- Remove ``mpirun_workaround.sh`` #1698
+- CI: Upgrade appleclang14 build to MacOS 13 #1703
+- Docs:
+
+  - Fix Shipped Internally #1682
+  - Fix leftover ADIOS2 mentions #1683
 
 0.16.0
 ------

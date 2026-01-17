@@ -5,7 +5,7 @@ Changelog
 
 0.17.0
 ------
-**Date:** 2025-01-14
+**Date:** 2025-01-17
 
 Unified Snapshots API, HDF5 Compression, Dataset-Specific Backend Configuration, fully supported Variable Encoding in ADIOS2, Chunk Distribution Strategies & Performance
 

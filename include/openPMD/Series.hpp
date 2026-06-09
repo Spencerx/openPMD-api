@@ -31,6 +31,7 @@
 #include "openPMD/auxiliary/Variant.hpp"
 #include "openPMD/backend/Attributable.hpp"
 #include "openPMD/backend/Container.hpp"
+#include "openPMD/backend/HierarchyVisitor.hpp"
 #include "openPMD/backend/ParsePreference.hpp"
 #include "openPMD/config.hpp"
 #include "openPMD/snapshots/Snapshots.hpp"
@@ -63,7 +64,6 @@ namespace openPMD
 {
 class ReadIterations;
 class StatefulIterator;
-class Series;
 class Series;
 
 namespace internal
@@ -100,8 +100,8 @@ namespace internal
         SeriesData &operator=(SeriesData &&) = delete;
 
         using IterationIndex_t = Iteration::IterationIndex_t;
-        using IterationsContainer_t = Container<Iteration, IterationIndex_t>;
-        IterationsContainer_t iterations{};
+        using IterationsContainer_t = Iterations;
+        Iterations iterations{};
 
         /**
          * Series::readIterations() returns an iterator type that modifies the
@@ -385,7 +385,7 @@ public:
      * Type for a container of Iterations indexed by IterationIndex_t.
      */
     using IterationsContainer_t = internal::SeriesData::IterationsContainer_t;
-    IterationsContainer_t iterations;
+    Iterations iterations;
 
     /**
      * @brief Is this a usable Series object?
@@ -777,6 +777,8 @@ public:
      * this method.
      */
     void close();
+
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
 
     /**
      * This overrides Attributable::iterationFlush() which will fail on Series.

@@ -30,6 +30,8 @@
 #include "openPMD/backend/Attributable.hpp"
 #include "openPMD/backend/BaseRecord.hpp"
 #include "openPMD/backend/Variant_internal.hpp"
+#include "openPMD/backend/scientific_defaults/ConfigAttribute.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 // comment so clang-format does not move this
 #include "openPMD/DatatypeMacros.hpp"
@@ -249,11 +251,13 @@ RecordComponent &RecordComponent::resetDataset(Dataset d)
         }
         else if (d.dtype != Datatype::UNDEFINED)
         {
+            setDirty(true);
             return makeEmpty(std::move(d));
         }
         else
         {
             rc.m_dataset = std::move(d);
+            setDirty(true);
             return *this;
         }
     }
@@ -381,6 +385,11 @@ bool RecordComponent::empty() const
     return get().m_isEmpty;
 }
 
+void RecordComponent::visitHierarchy(HierarchyVisitor &v, bool)
+{
+    v(*this);
+}
+
 void RecordComponent::flush(
     std::string const &name, internal::FlushParams const &flushParams)
 {
@@ -424,10 +433,6 @@ void RecordComponent::flush(
                     "before flushing or setting a constant value (see "
                     "RecordComponent::resetDataset()).");
             }
-        }
-        if (!containsAttribute("unitSI"))
-        {
-            setUnitSI(1);
         }
         auto constant_component_write_shape = [&]() {
             auto extent = getExtent();
@@ -526,9 +531,10 @@ void RecordComponent::flush(
     }
 }
 
-void RecordComponent::read(bool require_unit_si)
+void RecordComponent::read()
 {
-    readBase(require_unit_si);
+    readBase();
+    internal::ScientificDefaults::readDefaults(*this, IOHandler()->m_standard);
 }
 
 namespace
@@ -553,7 +559,7 @@ namespace
     };
 } // namespace
 
-void RecordComponent::readBase(bool require_unit_si)
+void RecordComponent::readBase()
 {
     using DT = Datatype;
     auto &rc = get();
@@ -604,32 +610,6 @@ void RecordComponent::readBase(bool require_unit_si)
     if (constant() && !empty())
     {
         read_constant();
-    }
-
-    if (require_unit_si)
-    {
-        if (!containsAttribute("unitSI"))
-        {
-            throw error::ReadError(
-                error::AffectedObject::Attribute,
-                error::Reason::NotFound,
-                {},
-                "Attribute unitSI required for record components, not found in "
-                "'" +
-                    myPath().openPMDPath() + "'.");
-        }
-        if (auto attr = getAttribute("unitSI");
-            !attr.getOptional<double>().has_value())
-        {
-            throw error::ReadError(
-                error::AffectedObject::Attribute,
-                error::Reason::UnexpectedContent,
-                {},
-                "Unexpected Attribute datatype for 'unitSI' (expected double, "
-                "found " +
-                    datatypeToString(attr.dtype) + ") in '" +
-                    myPath().openPMDPath() + "'.");
-        }
     }
 }
 
@@ -720,6 +700,16 @@ void RecordComponent::verifyChunk(
     }
 }
 
+void RecordComponent::scientificDefaults_impl(
+    internal::WriteOrRead wor, OpenpmdStandard)
+{
+    using namespace internal;
+    auto numerical_types = get_numerical_types();
+
+    defaultAttribute(*this, "unitSI")
+        .template withSetter<RecordComponent>(1.0, &RecordComponent::setUnitSI)
+        .withReader(numerical_types, require_type<double>())(wor);
+}
 namespace
 {
     struct LoadChunkVariant

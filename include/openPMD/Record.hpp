@@ -23,6 +23,7 @@
 #include "openPMD/RecordComponent.hpp"
 #include "openPMD/UnitDimension.hpp"
 #include "openPMD/backend/BaseRecord.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 #include <string>
 #include <type_traits>
@@ -34,6 +35,7 @@ class Record : public BaseRecord<RecordComponent>
     friend class Container<Record>;
     friend class Iteration;
     friend class ParticleSpecies;
+    friend class internal::ScientificDefaults;
 
 public:
     Record(Record const &) = default;
@@ -48,6 +50,8 @@ public:
     template <typename T>
     Record &setTimeOffset(T);
 
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
+
 private:
     Record();
 
@@ -55,6 +59,10 @@ private:
     flush_impl(std::string const &, internal::FlushParams const &) override;
 
     [[nodiscard]] internal::HomogenizeExtents read();
+
+protected:
+    void scientificDefaults_impl(
+        internal::WriteOrRead, OpenpmdStandard) override;
 }; // Record
 
 template <typename T>

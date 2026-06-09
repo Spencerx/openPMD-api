@@ -22,7 +22,9 @@
 
 #include "openPMD/Error.hpp"
 #include "openPMD/IO/Access.hpp"
+#include "openPMD/auxiliary/TypeTraits.hpp"
 #include "openPMD/backend/Attributable.hpp"
+#include "openPMD/backend/HierarchyVisitor.hpp"
 
 #include <initializer_list>
 #include <map>
@@ -259,6 +261,19 @@ public:
         -> decltype(InternalContainer().emplace(std::forward<Args>(args)...))
     {
         return container().emplace(std::forward<Args>(args)...);
+    }
+
+    template <typename ChildClass>
+    void visitHierarchyImpl(HierarchyVisitor &v, bool recursive)
+    {
+        if (recursive)
+        {
+            for (auto &p : *this)
+            {
+                p.second.visitHierarchy(v, recursive);
+            }
+        }
+        v(*static_cast<ChildClass *>(this));
     }
 
     // clang-format off

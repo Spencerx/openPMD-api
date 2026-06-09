@@ -21,6 +21,8 @@
 #pragma once
 
 #include "openPMD/RecordComponent.hpp"
+#include "openPMD/backend/HierarchyVisitor.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 #include <vector>
 
@@ -40,6 +42,7 @@ class MeshRecordComponent : public RecordComponent
     friend class BaseRecord;
     template <typename, typename>
     friend class internal::BaseRecordData;
+    friend class internal::ScientificDefaults;
 
     friend class Mesh;
 
@@ -91,6 +94,12 @@ public:
      */
     template <typename T>
     MeshRecordComponent &makeConstant(T);
+
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
+
+protected:
+    void scientificDefaults_impl(
+        internal::WriteOrRead, OpenpmdStandard) override;
 };
 
 template <typename T>

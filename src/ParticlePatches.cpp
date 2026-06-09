@@ -35,6 +35,11 @@ size_t ParticlePatches::numPatches() const
     return this->at("numParticles").getExtent()[0];
 }
 
+void ParticlePatches::visitHierarchy(HierarchyVisitor &v, bool recursive)
+{
+    visitHierarchyImpl<ParticlePatches>(v, recursive);
+}
+
 void ParticlePatches::read()
 {
     Parameter<Operation::LIST_PATHS> pList;
@@ -100,7 +105,7 @@ void ParticlePatches::read()
         pr.setDirty(false);
         try
         {
-            prc.PatchRecordComponent::read(/* require_unit_si = */ false);
+            prc.PatchRecordComponent::read();
         }
         catch (error::ReadError const &err)
         {

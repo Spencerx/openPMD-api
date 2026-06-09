@@ -27,6 +27,8 @@
 #include "openPMD/auxiliary/Variant.hpp"
 #include "openPMD/backend/Attributable.hpp"
 #include "openPMD/backend/Container.hpp"
+#include "openPMD/backend/HierarchyVisitor.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 #include <cstdint>
 #include <deque>
@@ -145,13 +147,28 @@ namespace internal
         std::optional<DeferredParseAccess> m_deferredParseAccess{};
     };
 } // namespace internal
+
+class Meshes : public Container<Mesh>
+{
+public:
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
+};
+
+class Particles : public Container<ParticleSpecies>
+{
+public:
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
+};
+
 /** @brief  Logical compilation of data from one snapshot (e.g. a single
  * simulation cycle).
  *
  * @see
  * https://github.com/openPMD/openPMD-standard/blob/latest/STANDARD.md#required-attributes-for-the-basepath
  */
-class Iteration : public Attributable
+class Iteration
+    : public Attributable
+    , internal::ScientificDefaults
 {
     template <typename T, typename T_key, typename T_container>
     friend class Container;
@@ -164,6 +181,8 @@ class Iteration : public Attributable
     friend class StatefulSnapshotsContainer;
     template <typename>
     friend struct traits::GenerationPolicy;
+    friend class internal::ScientificDefaults;
+    friend class Attributable;
 
 public:
     Iteration(Iteration const &) = default;
@@ -279,8 +298,10 @@ public:
     [[deprecated("This attribute is no longer set by the openPMD-api.")]] bool
     closedByWriter() const;
 
-    Container<Mesh> meshes{};
-    Container<ParticleSpecies> particles{}; // particleSpecies?
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
+
+    Meshes meshes{};
+    Particles particles{};
 
     virtual ~Iteration() = default;
 
@@ -442,7 +463,7 @@ private:
      *
      * @param w The Writable representing the parent.
      */
-    virtual void linkHierarchy(Writable &w);
+    void linkHierarchy(Writable &w) override;
 
     /**
      * @brief Access an iteration in read mode that has potentially not been
@@ -450,6 +471,10 @@ private:
      *
      */
     void runDeferredParseAccess();
+
+protected:
+    void scientificDefaults_impl(
+        internal::WriteOrRead, OpenpmdStandard) override;
 }; // Iteration
 
 namespace traits
@@ -512,5 +537,11 @@ private:
     IndexedIteration(Iteration_t &&it, index_t index)
         : Iteration(std::forward<Iteration_t>(it)), iterationIndex(index)
     {}
+};
+
+class Iterations : public Container<Iteration, Iteration::IterationIndex_t>
+{
+public:
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
 };
 } // namespace openPMD

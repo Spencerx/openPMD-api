@@ -25,6 +25,7 @@
 #include "openPMD/ThrowError.hpp"
 #include "openPMD/auxiliary/OutOfRangeMsg.hpp"
 #include "openPMD/backend/Attribute.hpp"
+#include "openPMD/backend/HierarchyVisitor.hpp"
 #include "openPMD/backend/Writable.hpp"
 
 #include <cstddef>
@@ -57,6 +58,8 @@ namespace internal
     class IterationData;
     class SeriesData;
     struct HomogenizeExtents;
+    struct ConfigAttribute;
+    class ScientificDefaults;
 
     class SharedAttributableData
     {
@@ -244,6 +247,8 @@ class Attributable
     friend class internal::AttributableData;
     friend class Snapshots;
     friend struct internal::HomogenizeExtents;
+    friend struct internal::ConfigAttribute;
+    friend class internal::ScientificDefaults;
 
 protected:
     // tag for internal constructor
@@ -276,6 +281,7 @@ public:
     template <typename T>
     bool setAttribute(std::string const &key, T value);
     bool setAttribute(std::string const &key, char const value[]);
+    bool setAttribute(std::string const &key, Attribute value);
     /** @}
      */
 
@@ -397,6 +403,57 @@ public:
      *        been modified.
      */
     void touch();
+
+    /**
+     * Visitor pattern for the openPMD object hierarchy in postfix traversal.
+     *
+     * @note As the HierarchyVisitor interface can be tedious to implement,
+     *       consider using visitHierarchyFromLambda for a more convenient
+     *       interface.
+
+     * @note to developers: if at any point a prefix traversal should become
+     *       necessary, consider emplacing configuration options for this inside
+     *       HierarchyVisitor to keep the interface clean.
+     *
+     * @param visitor Operations to run for each object.
+     * @param recursive Extend the operation recursively to children.
+     */
+    virtual void visitHierarchy(HierarchyVisitor &visitor, bool recursive);
+
+    /**
+     * Visitor pattern for the openPMD object hierarchy in postfix traversal,
+     * lambda version.
+     *
+     * The lambda parameter will be called with a reference to each object in
+     * the current object's enclosed hierarchy.
+     *
+     * @note Definition inside include/openPMD/backend/HierarchyVisitorImpl.hpp.
+     * @param lambda Operations to run for each object.
+     * @param recursive Extend the operation recursively to children.
+     */
+    template <typename Lambda>
+    void visitHierarchyFromLambda(Lambda &&lambda, bool recursive);
+
+    /** Create standard defined attributes with default values now, insofar they
+     *  are still missing. Does not flush.
+     *
+     * Refer to
+     * https://github.com/openPMD/openPMD-standard/blob/latest/STANDARD.md
+     * for the attributes implied by this operation.
+     *
+     * By default, standard defined attributes are written upon closing the
+     * containing Iteration / Series. Calling this soon can make data available
+     * for early readers (e.g. read while the writer is still modifying). In
+     * workflows that keep single Iterations open over an extended period of
+     * time (e.g. back-transformed diagnostics), this can help creating readable
+     * files earlier than without.
+     *
+     * Attributes may still be modified after this as usual. Attributes defined
+     * before this call will not be modified by it.
+     *
+     * @param recursive Extend the operation recursively to children.
+     */
+    void populateMissingMetadata(bool recursive);
 
     [[nodiscard]] OpenpmdStandard openPMDStandard() const;
 

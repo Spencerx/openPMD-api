@@ -23,7 +23,10 @@
 #include "openPMD/UnitDimension.hpp"
 #include "openPMD/backend/Attributable.hpp"
 #include "openPMD/backend/BaseRecord.hpp"
+#include "openPMD/backend/Container.hpp"
 #include "openPMD/backend/MeshRecordComponent.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults_auxiliary.hpp"
 
 #include <ostream>
 #include <string>
@@ -41,6 +44,8 @@ class Mesh : public BaseRecord<MeshRecordComponent>
 {
     friend class Container<Mesh>;
     friend class Iteration;
+    friend class internal::ScientificDefaults;
+    friend class Attributable;
 
 public:
     Mesh(Mesh const &) = default;
@@ -322,12 +327,19 @@ public:
         typename = std::enable_if_t<std::is_floating_point<T>::value>>
     Mesh &setTimeOffset(T timeOffset);
 
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
+
 private:
     Mesh();
 
     void
     flush_impl(std::string const &, internal::FlushParams const &) override;
     void read();
+    auto retrieveDimensionality() const -> uint64_t;
+
+protected:
+    void scientificDefaults_impl(
+        internal::WriteOrRead, OpenpmdStandard) override;
 }; // Mesh
 
 template <typename T>

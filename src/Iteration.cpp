@@ -30,10 +30,14 @@
 #include "openPMD/auxiliary/DerefDynamicCast.hpp"
 #include "openPMD/auxiliary/Filesystem.hpp"
 #include "openPMD/auxiliary/StringManip.hpp"
+#include "openPMD/auxiliary/TypeTraits.hpp"
 #include "openPMD/auxiliary/Variant.hpp"
 #include "openPMD/backend/Attributable.hpp"
+#include "openPMD/backend/BaseRecordComponent.hpp"
 #include "openPMD/backend/Variant_internal.hpp"
 #include "openPMD/backend/Writable.hpp"
+#include "openPMD/backend/scientific_defaults/ConfigAttribute.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -42,6 +46,7 @@
 #include <optional>
 #include <stdexcept>
 #include <tuple>
+#include <type_traits>
 #include <variant>
 
 namespace openPMD
@@ -49,12 +54,19 @@ namespace openPMD
 using internal::CloseStatus;
 using internal::DeferredParseAccess;
 
+void Meshes::visitHierarchy(HierarchyVisitor &v, bool recursive)
+{
+    visitHierarchyImpl<Meshes>(v, recursive);
+}
+
+void Particles::visitHierarchy(HierarchyVisitor &v, bool recursive)
+{
+    visitHierarchyImpl<Particles>(v, recursive);
+}
+
 Iteration::Iteration() : Attributable(NoInit())
 {
     setData(std::make_shared<Data_t>());
-    setTime(static_cast<double>(0));
-    setDt(static_cast<double>(1));
-    setTimeUnitSI(1);
     meshes.writable().ownKeyWithinParent = "meshes";
     particles.writable().ownKeyWithinParent = "particles";
 }
@@ -122,6 +134,12 @@ Iteration &Iteration::close(bool _flush)
         // yet keeps it re-openable)
         break;
     }
+
+    if (access::write(IOHandler()->m_frontendAccess))
+    {
+        populateMissingMetadata(true);
+    }
+
     if (_flush)
     {
         if (flag == StepStatus::DuringStep)
@@ -234,6 +252,16 @@ bool Iteration::closedByWriter() const
     {
         return false;
     }
+}
+
+void Iteration::visitHierarchy(HierarchyVisitor &v, bool recursive)
+{
+    if (recursive)
+    {
+        meshes.visitHierarchy(v, recursive);
+        particles.visitHierarchy(v, recursive);
+    }
+    v(*this);
 }
 
 void Iteration::flushFileBased(
@@ -509,81 +537,6 @@ void Iteration::read_impl(std::string const &groupPath)
     pOpen.path = groupPath;
     IOHandler()->enqueue(IOTask(this, pOpen));
 
-    using DT = Datatype;
-    Parameter<Operation::READ_ATT> aRead;
-
-    aRead.name = "dt";
-    IOHandler()->enqueue(IOTask(this, aRead));
-    IOHandler()->flush(internal::defaultFlushParams);
-    if (*aRead.dtype == DT::FLOAT)
-        setDt(Attribute(Attribute::from_any, *aRead.m_resource).get<float>());
-    else if (*aRead.dtype == DT::DOUBLE)
-        setDt(Attribute(Attribute::from_any, *aRead.m_resource).get<double>());
-    else if (*aRead.dtype == DT::LONG_DOUBLE)
-        setDt(Attribute(Attribute::from_any, *aRead.m_resource)
-                  .get<long double>());
-    // conversion cast if a backend reports an integer type
-    else if (
-        auto val = Attribute(Attribute::from_any, *aRead.m_resource)
-                       .getOptional<double>();
-        val.has_value())
-        setDt(val.value());
-    else
-        throw error::ReadError(
-            error::AffectedObject::Attribute,
-            error::Reason::UnexpectedContent,
-            {},
-            "Unexpected Attribute datatype for 'dt' (expected double, found " +
-                datatypeToString(
-                    Attribute(Attribute::from_any, *aRead.m_resource).dtype) +
-                ")");
-
-    aRead.name = "time";
-    IOHandler()->enqueue(IOTask(this, aRead));
-    IOHandler()->flush(internal::defaultFlushParams);
-    if (*aRead.dtype == DT::FLOAT)
-        setTime(Attribute(Attribute::from_any, *aRead.m_resource).get<float>());
-    else if (*aRead.dtype == DT::DOUBLE)
-        setTime(
-            Attribute(Attribute::from_any, *aRead.m_resource).get<double>());
-    else if (*aRead.dtype == DT::LONG_DOUBLE)
-        setTime(Attribute(Attribute::from_any, *aRead.m_resource)
-                    .get<long double>());
-    // conversion cast if a backend reports an integer type
-    else if (
-        auto val = Attribute(Attribute::from_any, *aRead.m_resource)
-                       .getOptional<double>();
-        val.has_value())
-        setTime(val.value());
-    else
-        throw error::ReadError(
-            error::AffectedObject::Attribute,
-            error::Reason::UnexpectedContent,
-            {},
-            "Unexpected Attribute datatype for 'time' (expected double, "
-            "found " +
-                datatypeToString(
-                    Attribute(Attribute::from_any, *aRead.m_resource).dtype) +
-                ")");
-
-    aRead.name = "timeUnitSI";
-    IOHandler()->enqueue(IOTask(this, aRead));
-    IOHandler()->flush(internal::defaultFlushParams);
-    if (auto val = Attribute(Attribute::from_any, *aRead.m_resource)
-                       .getOptional<double>();
-        val.has_value())
-        setTimeUnitSI(val.value());
-    else
-        throw error::ReadError(
-            error::AffectedObject::Attribute,
-            error::Reason::UnexpectedContent,
-            {},
-            "Unexpected Attribute datatype for 'timeUnitSI' (expected double, "
-            "found " +
-                datatypeToString(
-                    Attribute(Attribute::from_any, *aRead.m_resource).dtype) +
-                ")");
-
     /* Find the root point [Series] of this file,
      * meshesPath and particlesPath are stored there */
     Series s = retrieveSeries();
@@ -646,6 +599,8 @@ void Iteration::read_impl(std::string const &groupPath)
     particles.setDirty(false);
 
     readAttributes(ReadMode::FullyReread);
+    internal::ScientificDefaults::readDefaults(*this, IOHandler()->m_standard);
+
 #ifdef openPMD_USE_INVASIVE_TESTS
     if (containsAttribute("__openPMD_internal_fail"))
     {
@@ -1011,6 +966,32 @@ void Iteration::runDeferredParseAccess()
         it.m_deferredParseAccess = std::optional<DeferredParseAccess>();
         IOHandler()->m_seriesStatus = oldStatus;
     }
+}
+
+void Iteration::scientificDefaults_impl(
+    internal::WriteOrRead wor, OpenpmdStandard)
+{
+    using namespace internal;
+    auto float_types = get_float_types();
+    auto int_types = get_int_types();
+
+    defaultAttribute(*this, "time")
+        .template withSetter<Iteration>(0., &Iteration::setTime)
+        .withReader(float_types, require_scalar)
+        .withReader(int_types, require_type<double>())(wor);
+    defaultAttribute(*this, "dt")
+        .template withSetter<Iteration>(1., &Iteration::setDt)
+        .withReader(float_types, require_scalar)
+        .withReader(int_types, require_type<double>())(wor);
+    defaultAttribute(*this, "timeUnitSI")
+        .template withSetter<Iteration>(1.0, &Iteration::setTimeUnitSI)
+        .withReader(float_types, require_type<double>())
+        .withReader(int_types, require_type<double>())(wor);
+}
+
+void Iterations::visitHierarchy(HierarchyVisitor &v, bool recursive)
+{
+    visitHierarchyImpl<Iterations>(v, recursive);
 }
 
 template float Iteration::time<float>() const;

@@ -26,6 +26,8 @@
 #include "openPMD/auxiliary/Variant.hpp"
 #include "openPMD/backend/BaseRecordComponent.hpp"
 #include "openPMD/backend/Container.hpp"
+#include "openPMD/backend/HierarchyVisitor.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 #include <array>
 #include <stdexcept>
@@ -179,6 +181,8 @@ template <typename T_elem>
 class BaseRecord
     : public Container<T_elem>
     , public T_elem // T_RecordComponent
+// ScientificDefaults already inherited via RecordComponent
+// , internal::ScientificDefaults
 {
 public:
     using T_RecordComponent = T_elem;
@@ -197,6 +201,7 @@ private:
     friend class internal::ScalarIterator;
     template <typename T>
     friend T &internal::makeOwning(T &self, Series);
+    friend class internal::ScientificDefaults;
 
     using Data_t =
         internal::BaseRecordData<T_elem, typename T_RecordComponent::Data_t>;
@@ -362,15 +367,16 @@ public:
      */
     bool scalar() const;
 
-protected:
-    void readBase();
-
 private:
     void flush(std::string const &, internal::FlushParams const &) final;
     virtual void
     flush_impl(std::string const &, internal::FlushParams const &) = 0;
 
     void eraseScalar();
+
+protected:
+    void scientificDefaults_impl(
+        internal::WriteOrRead, OpenpmdStandard) override;
 }; // BaseRecord
 
 namespace detail
@@ -381,6 +387,21 @@ namespace detail
 
     template <typename BaseRecord>
     void verifyNonscalar(BaseRecord *self);
+
+    template <typename T>
+    struct IsBaseRecord
+    {
+        constexpr static bool value = false;
+    };
+
+    template <typename T>
+    struct IsBaseRecord<BaseRecord<T>>
+    {
+        constexpr static bool value = true;
+    };
+
+    template <typename T>
+    constexpr bool IsBaseRecord_v = IsBaseRecord<T>::value;
 } // namespace detail
 
 template <typename T_elem>

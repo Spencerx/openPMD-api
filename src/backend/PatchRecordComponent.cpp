@@ -22,6 +22,8 @@
 #include "openPMD/RecordComponent.hpp"
 #include "openPMD/auxiliary/Memory.hpp"
 #include "openPMD/backend/BaseRecord.hpp"
+#include "openPMD/backend/scientific_defaults/ConfigAttribute.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 #include <algorithm>
 
@@ -52,6 +54,11 @@ Extent PatchRecordComponent::getExtent() const
     }
 }
 
+void PatchRecordComponent::visitHierarchy(HierarchyVisitor &v, bool)
+{
+    v(*this);
+}
+
 PatchRecordComponent::PatchRecordComponent(
     BaseRecord<PatchRecordComponent> const &baseRecord)
     : RecordComponent(NoInit())
@@ -59,12 +66,36 @@ PatchRecordComponent::PatchRecordComponent(
     static_cast<RecordComponent &>(*this).operator=(baseRecord);
 }
 
+void PatchRecordComponent::read()
+{
+    readBase();
+    internal::ScientificDefaults::readDefaults(*this, IOHandler()->m_standard);
+}
+
 PatchRecordComponent::PatchRecordComponent() : RecordComponent(NoInit())
 {
     setData(std::make_shared<Data_t>());
-    setUnitSI(1);
 }
 
 PatchRecordComponent::PatchRecordComponent(NoInit) : RecordComponent(NoInit())
 {}
+
+void PatchRecordComponent::scientificDefaults_impl(
+    internal::WriteOrRead wor, OpenpmdStandard)
+{
+    using namespace internal;
+
+    // We don't require unitSI for PatchRecordComponent
+    //
+    // addParentDefaults<RecordComponent, write>();
+    //
+    // But we still set it when writing. Doesnt hurt and some readers might
+    // expect it.
+    defaultAttribute(*this, "unitSI")
+        .template withSetter<PatchRecordComponent>(
+            1.0, &PatchRecordComponent::setUnitSI)
+        // Do NOT add a reader here.
+        // .withReader(numerical_types, require_type<double>())
+        (wor);
+}
 } // namespace openPMD

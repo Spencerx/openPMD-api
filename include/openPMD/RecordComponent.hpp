@@ -27,6 +27,8 @@
 #include "openPMD/auxiliary/UniquePtr.hpp"
 #include "openPMD/backend/Attributable.hpp"
 #include "openPMD/backend/BaseRecordComponent.hpp"
+#include "openPMD/backend/HierarchyVisitor.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 // comment to prevent this include from being moved by clang-format
 #include "openPMD/DatatypeMacros.hpp"
@@ -110,7 +112,9 @@ namespace internal
 template <typename>
 class BaseRecord;
 
-class RecordComponent : public BaseRecordComponent
+class RecordComponent
+    : public BaseRecordComponent
+    , protected internal::ScientificDefaults
 {
     template <typename T, typename T_key, typename T_container>
     friend class Container;
@@ -128,6 +132,8 @@ class RecordComponent : public BaseRecordComponent
     friend class MeshRecordComponent;
     template <typename T>
     friend T &internal::makeOwning(T &self, Series);
+    friend class internal::ScientificDefaults;
+    friend class Attributable;
 
 public:
     enum class Allocation
@@ -482,11 +488,13 @@ public:
     auto visit(Args &&...args) -> decltype(Visitor::template call<char>(
         std::declval<RecordComponent &>(), std::forward<Args>(args)...));
 
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
+
     static constexpr char const *const SCALAR = "\vScalar";
 
 protected:
     void flush(std::string const &, internal::FlushParams const &);
-    void read(bool require_unit_si);
+    void read();
 
 private:
     /**
@@ -534,12 +542,16 @@ OPENPMD_protected
         BaseRecordComponent::setData(m_recordComponentData);
     }
 
-    void readBase(bool require_unit_si);
+    void readBase();
 
     template <typename T>
     void verifyChunk(Offset const &, Extent const &) const;
 
     void verifyChunk(Datatype, Offset const &, Extent const &) const;
+
+protected:
+    void scientificDefaults_impl(
+        internal::WriteOrRead, OpenpmdStandard) override;
 }; // RecordComponent
 
 namespace internal

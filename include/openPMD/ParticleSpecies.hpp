@@ -24,22 +24,31 @@
 #include "openPMD/Record.hpp"
 #include "openPMD/backend/Attributable.hpp"
 #include "openPMD/backend/Container.hpp"
+#include "openPMD/backend/HierarchyVisitor.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults_auxiliary.hpp"
 
 #include <string>
 
 namespace openPMD
 {
 
-class ParticleSpecies : public Container<Record>
+class ParticleSpecies
+    : public Container<Record>
+    , internal::ScientificDefaults
 {
     friend class Container<ParticleSpecies>;
     friend class Container<Record>;
     friend class Iteration;
     template <typename T>
     friend T &internal::makeOwning(T &self, Series);
+    friend class internal::ScientificDefaults;
+    friend class Attributable;
 
 public:
     ParticlePatches particlePatches;
+
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
 
 private:
     ParticleSpecies();
@@ -53,6 +62,10 @@ private:
     {
         return m_containerData;
     }
+
+protected:
+    void scientificDefaults_impl(
+        internal::WriteOrRead, OpenpmdStandard) override;
 };
 
 namespace traits

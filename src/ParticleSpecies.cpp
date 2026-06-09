@@ -20,8 +20,6 @@
  */
 #include "openPMD/ParticleSpecies.hpp"
 #include "openPMD/RecordComponent.hpp"
-#include "openPMD/Series.hpp"
-#include "openPMD/auxiliary/DerefDynamicCast.hpp"
 #include "openPMD/backend/Writable.hpp"
 
 #include <algorithm>
@@ -29,6 +27,15 @@
 
 namespace openPMD
 {
+void ParticleSpecies::visitHierarchy(HierarchyVisitor &v, bool recursive)
+{
+    if (recursive)
+    {
+        particlePatches.visitHierarchy(v, recursive);
+    }
+    visitHierarchyImpl<ParticleSpecies>(v, recursive);
+}
+
 ParticleSpecies::ParticleSpecies()
 {
     particlePatches.writable().ownKeyWithinParent = "particlePatches";
@@ -175,23 +182,9 @@ void ParticleSpecies::flush(
             record.second.flush(record.first, flushParams);
         for (auto &patch : particlePatches)
             patch.second.flush(patch.first, flushParams);
-        if (flushParams.flushLevel != FlushLevel::SkeletonOnly)
-        {
-            particlePatches.setDirty(false);
-        }
     }
     else
     {
-        if (flushParams.flushLevel != FlushLevel::SkeletonOnly)
-        {
-            auto it = find("position");
-            if (it != end())
-                it->second.setUnitDimension({{UnitDimension::L, 1}});
-            it = find("positionOffset");
-            if (it != end())
-                it->second.setUnitDimension({{UnitDimension::L, 1}});
-        }
-
         Container<Record>::flush(path, flushParams);
 
         for (auto &record : *this)
@@ -203,14 +196,16 @@ void ParticleSpecies::flush(
             for (auto &patch : particlePatches)
                 patch.second.flush(patch.first, flushParams);
         }
-        else
-        {
-            particlePatches.setDirty(false);
-        }
     }
     if (flushParams.flushLevel != FlushLevel::SkeletonOnly)
     {
+        particlePatches.setDirty(false);
         setDirty(false);
     }
+}
+void ParticleSpecies::scientificDefaults_impl(
+    internal::WriteOrRead, OpenpmdStandard)
+{
+    // no-op
 }
 } // namespace openPMD

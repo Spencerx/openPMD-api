@@ -26,6 +26,7 @@
 #include "openPMD/ParticlePatches.hpp"
 #include "openPMD/ParticleSpecies.hpp"
 #include "openPMD/backend/Container.hpp"
+#include "openPMD/backend/HierarchyVisitorImpl.hpp"
 #include "openPMD/backend/PatchRecordComponent.hpp"
 
 namespace openPMD
@@ -49,8 +50,8 @@ namespace internal
 {
     template class EraseStaleEntries<Mesh>;
     template class EraseStaleEntries<ParticleSpecies>;
-    template class EraseStaleEntries<Container<Mesh>>;
-    template class EraseStaleEntries<Container<ParticleSpecies>>;
+    template class EraseStaleEntries<Meshes>;
+    template class EraseStaleEntries<Particles>;
 } // namespace internal
 
 } // namespace openPMD

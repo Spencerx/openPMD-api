@@ -24,6 +24,7 @@
 #include "openPMD/RecordComponent.hpp"
 #include "openPMD/auxiliary/ShareRawInternal.hpp"
 #include "openPMD/backend/BaseRecordComponent.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 #include <memory>
 #include <sstream>
@@ -53,6 +54,7 @@ class PatchRecordComponent : public RecordComponent
     friend class ParticlePatches;
     friend class PatchRecord;
     friend class ParticleSpecies;
+    friend class internal::ScientificDefaults;
 
 public:
     /**
@@ -87,11 +89,17 @@ public:
     template <typename T>
     void store(T);
 
+    void visitHierarchy(HierarchyVisitor &v, bool recursive) override;
+
     // clang-format off
 OPENPMD_private
     // clang-format on
 
     using RecordComponent::flush;
+
+    // This differs from RecordComponent::read() such that unitSI is not
+    // required
+    void read();
 
     // clang-format off
 OPENPMD_protected
@@ -99,6 +107,10 @@ OPENPMD_protected
 
     PatchRecordComponent();
     PatchRecordComponent(NoInit);
+
+protected:
+    void scientificDefaults_impl(
+        internal::WriteOrRead, OpenpmdStandard) override;
 }; // PatchRecordComponent
 
 template <typename T>

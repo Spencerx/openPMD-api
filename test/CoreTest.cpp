@@ -619,6 +619,9 @@ TEST_CASE("iteration_default_test", "[core]")
 
     Iteration &i = o.iterations[42];
 
+    REQUIRE(i.numAttributes() == 0);
+
+    i.close();
     REQUIRE(i.time<double>() == static_cast<double>(0));
     REQUIRE(i.dt<double>() == static_cast<double>(1));
     REQUIRE(i.timeUnitSI() == static_cast<double>(1));
@@ -664,13 +667,15 @@ TEST_CASE("particleSpecies_modification_test", "[core]")
     REQUIRE(0 == patches.numAttributes());
     auto &offset = patches["offset"];
     REQUIRE(0 == offset.size());
-    REQUIRE(1 == offset.numAttributes()); // unitDimension
-    std::array<double, 7> zeros{{0., 0., 0., 0., 0., 0., 0.}};
-    REQUIRE(zeros == offset.unitDimension());
 
     auto &off_x = offset["x"];
     off_x.resetDataset(dset);
+
+    o.iterations[42].close();
+    REQUIRE(1 == offset.numAttributes()); // unitDimension
     REQUIRE(1 == off_x.unitSI());
+    std::array<double, 7> zeros{{0., 0., 0., 0., 0., 0., 0.}};
+    REQUIRE(zeros == offset.unitDimension());
 }
 
 TEST_CASE("record_constructor_test", "[core]")
@@ -690,11 +695,16 @@ TEST_CASE("record_constructor_test", "[core]")
     REQUIRE(r["y"].resetDataset(dset).numAttributes() == 0); /* unitSI */
     // REQUIRE(r["z"].unitSI() == 1);
     REQUIRE(r["z"].resetDataset(dset).numAttributes() == 0); /* unitSI */
+    REQUIRE(r.numAttributes() == 0);
+    // TODO: unitSI
+    // REQUIRE(r["x"].numAttributes() == 0);
+    // REQUIRE(r["y"].numAttributes() == 0);
+    // REQUIRE(r["z"].numAttributes() == 0);
+    o.iterations[42].close();
     std::array<double, 7> zeros{{0., 0., 0., 0., 0., 0., 0.}};
     REQUIRE(r.unitDimension() == zeros);
     REQUIRE(r.timeOffset<float>() == static_cast<float>(0));
     REQUIRE(r.numAttributes() == 2); /* timeOffset, unitDimension */
-    o.flush();
     REQUIRE(r["x"].unitSI() == 1);
     REQUIRE(r["y"].unitSI() == 1);
     REQUIRE(r["z"].unitSI() == 1);
@@ -755,11 +765,14 @@ TEST_CASE("mesh_constructor_test", "[core]")
 
     Mesh &m = o.iterations[42].meshes["E"];
 
-    std::vector<double> pos{0};
-    /* unitSI and position are set to default values upon flushing */
+    std::vector<double> pos{0.5};
+    /* unitSI and position are set to default values upon closing */
     REQUIRE(m["x"].resetDataset(globalDataset).numAttributes() == 0);
     REQUIRE(m["y"].resetDataset(globalDataset).numAttributes() == 0);
     REQUIRE(m["z"].resetDataset(globalDataset).numAttributes() == 0);
+
+    REQUIRE(m.numAttributes() == 0);
+    o.iterations[42].close();
 
     REQUIRE(m.geometry() == Mesh::Geometry::cartesian);
     REQUIRE(m.dataOrder() == Mesh::DataOrder::C);
@@ -769,12 +782,12 @@ TEST_CASE("mesh_constructor_test", "[core]")
     REQUIRE(m.gridSpacing<double>() == gs);
     std::vector<double> ggo{0};
     REQUIRE(m.gridGlobalOffset() == ggo);
+    auxiliary::write_vec_to_stream(std::cout, m.attributes()) << std::endl;
     REQUIRE(
         m.numAttributes() ==
-        7); /* axisLabels, dataOrder, geometry, gridGlobalOffset, gridSpacing,
-               timeOffset, unitDimension */
+        8); /* axisLabels, dataOrder, geometry, gridGlobalOffset, gridSpacing,
+               timeOffset, unitDimension, gridUnitSI */
 
-    o.flush();
     REQUIRE(m["x"].unitSI() == 1);
     REQUIRE(m["x"].numAttributes() == 2); /* unitSI, position */
     REQUIRE(m["x"].position<double>() == pos);
@@ -795,24 +808,27 @@ TEST_CASE("mesh_modification_test", "[core]")
     m["y"].resetDataset(globalDataset);
     m["z"].resetDataset(globalDataset);
 
+    o.iterations[42].close(); // trigger writing for defaults
+    o.iterations[42].open();
+
     m.setGeometry(Mesh::Geometry::spherical);
     REQUIRE(m.geometry() == Mesh::Geometry::spherical);
-    REQUIRE(m.numAttributes() == 7);
+    REQUIRE(m.numAttributes() == 8);
     m.setDataOrder(Mesh::DataOrder::F);
     REQUIRE(m.dataOrder() == Mesh::DataOrder::F);
-    REQUIRE(m.numAttributes() == 7);
+    REQUIRE(m.numAttributes() == 8);
     std::vector<std::string> al{"z_", "y_", "x_"};
     m.setAxisLabels({"z_", "y_", "x_"});
     REQUIRE(m.axisLabels() == al);
-    REQUIRE(m.numAttributes() == 7);
+    REQUIRE(m.numAttributes() == 8);
     std::vector<double> gs{1e-5, 2e-5, 3e-5};
     m.setGridSpacing(gs);
     REQUIRE(m.gridSpacing<double>() == gs);
-    REQUIRE(m.numAttributes() == 7);
+    REQUIRE(m.numAttributes() == 8);
     std::vector<double> ggo{1e-10, 2e-10, 3e-10};
     m.setGridGlobalOffset({1e-10, 2e-10, 3e-10});
     REQUIRE(m.gridGlobalOffset() == ggo);
-    REQUIRE(m.numAttributes() == 7);
+    REQUIRE(m.numAttributes() == 8);
     m.setGridUnitSI(42.0);
     REQUIRE(m.gridUnitSI() == static_cast<double>(42));
     REQUIRE(m.numAttributes() == 8);
@@ -1071,7 +1087,7 @@ TEST_CASE("wrapper_test", "[core]")
         Datatype::LONG_DOUBLE);
     REQUIRE(o.iterations[1].meshes["E"]["x"].getExtent() == Extent{7});
 
-    Container<Iteration, uint64_t> its = o.iterations;
+    Iterations its = o.iterations;
     its[1].meshes["E"]["y"].resetDataset(Dataset(Datatype::CHAR, {2}));
     REQUIRE(o.iterations[1].meshes["E"].count("y") == 1);
     REQUIRE(o.iterations[1].meshes["E"]["y"].getDatatype() == Datatype::CHAR);
@@ -1284,16 +1300,14 @@ TEST_CASE("empty_record_test", "[core]")
 
     o.iterations[1].meshes["E"].setComment(
         "No assumption about contained RecordComponents will be made");
-    REQUIRE_THROWS_WITH(
-        o.flush(),
-        Catch::Matchers::Equals(
-            "A Record can not be written without any contained "
-            "RecordComponents: E"));
-    o.iterations[1].meshes["E"][RecordComponent::SCALAR].resetDataset(
-        Dataset(Datatype::DOUBLE, {1}));
     auto B = o.iterations[1].meshes["B"];
     B.resetDataset(Dataset(Datatype::DOUBLE, {1}));
-    o.flush();
+    auto sneakily_keep_meshes_alive = o.iterations[1].meshes;
+    o.close();
+#if openPMD_USE_INVASIVE_TESTS
+    REQUIRE(!sneakily_keep_meshes_alive["E"].written());
+    REQUIRE(sneakily_keep_meshes_alive["B"].written());
+#endif
 }
 
 TEST_CASE("zero_extent_component", "[core]")

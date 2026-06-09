@@ -19,7 +19,10 @@
  * If not, see <http://www.gnu.org/licenses/>.
  */
 #include "openPMD/backend/MeshRecordComponent.hpp"
+#include "openPMD/RecordComponent.hpp"
 #include "openPMD/backend/BaseRecord.hpp"
+#include "openPMD/backend/scientific_defaults/ConfigAttribute.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 namespace openPMD
 {
@@ -38,35 +41,8 @@ MeshRecordComponent::MeshRecordComponent(
 
 void MeshRecordComponent::read()
 {
-    using DT = Datatype;
-    Parameter<Operation::READ_ATT> aRead;
-
-    aRead.name = "position";
-    IOHandler()->enqueue(IOTask(this, aRead));
-    IOHandler()->flush(internal::defaultFlushParams);
-    Attribute a = Attribute(Attribute::from_any, *aRead.m_resource);
-    if (*aRead.dtype == DT::VEC_FLOAT || *aRead.dtype == DT::FLOAT)
-        setPosition(a.get<std::vector<float> >());
-    else if (*aRead.dtype == DT::VEC_DOUBLE || *aRead.dtype == DT::DOUBLE)
-        setPosition(a.get<std::vector<double> >());
-    else if (
-        *aRead.dtype == DT::VEC_LONG_DOUBLE || *aRead.dtype == DT::LONG_DOUBLE)
-        setPosition(a.get<std::vector<long double> >());
-    // conversion cast if a backend reports an integer type
-    else if (auto val = a.getOptional<std::vector<double> >(); val.has_value())
-        setPosition(val.value());
-    else
-        throw error::ReadError(
-            error::AffectedObject::Attribute,
-            error::Reason::UnexpectedContent,
-            {},
-            "Unexpected Attribute datatype for 'position' (expected a vector "
-            "of any floating point type, found " +
-                datatypeToString(
-                    Attribute(Attribute::from_any, *aRead.m_resource).dtype) +
-                ")");
-
-    readBase(/* require_unit_si = */ true);
+    readBase();
+    internal::ScientificDefaults::readDefaults(*this, IOHandler()->m_standard);
 }
 
 void MeshRecordComponent::flush(
@@ -75,11 +51,6 @@ void MeshRecordComponent::flush(
     if (!dirtyRecursive())
     {
         return;
-    }
-    if (access::write(IOHandler()->m_frontendAccess) &&
-        !containsAttribute("position"))
-    {
-        setPosition(std::vector<double>{0});
     }
     RecordComponent::flush(name, params);
 }
@@ -95,6 +66,31 @@ MeshRecordComponent &MeshRecordComponent::setPosition(std::vector<T> pos)
     return *this;
 }
 
+void MeshRecordComponent::visitHierarchy(HierarchyVisitor &v, bool)
+{
+    v(*this);
+}
+
+void MeshRecordComponent::scientificDefaults_impl(
+    internal::WriteOrRead wor, OpenpmdStandard standard)
+{
+    using namespace internal;
+    auto float_types = get_float_types();
+    auto int_types = get_int_types();
+
+    auto dimensionality = getDimensionality();
+
+    defaultAttribute(*this, "position")
+        .template withSetter<MeshRecordComponent>(
+            [&]() {
+                return auxiliary::createDefaultVector(dimensionality, 0.5);
+            },
+            &MeshRecordComponent::setPosition)
+        .withReader(float_types, require_vector)
+        .withReader(int_types, require_type<std::vector<double>>())(wor);
+
+    RecordComponent::scientificDefaults_impl(wor, standard);
+}
 template MeshRecordComponent &
 MeshRecordComponent::setPosition(std::vector<float> pos);
 template MeshRecordComponent &

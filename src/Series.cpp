@@ -3317,6 +3317,14 @@ namespace internal
             !(access::readOnly(IOHandler->m_frontendAccess) &&
               !(*this)->m_writable.written))
         {
+            for (auto &[_, iteration] : iterations)
+            {
+                (void)_;
+                if (!iteration.closed())
+                {
+                    iteration.close(/* flush = */ false);
+                }
+            }
             impl.flush();
             /*
              * In file-based iteration encoding, this must be triggered by
@@ -3554,6 +3562,15 @@ void Series::close()
 {
     get().close();
     m_attri.reset();
+}
+
+void Series::visitHierarchy(HierarchyVisitor &v, bool recursive)
+{
+    if (recursive)
+    {
+        get().iterations.visitHierarchy(v, recursive);
+    }
+    v(*this);
 }
 
 auto Series::currentSnapshot() -> std::optional<std::vector<IterationIndex_t>>

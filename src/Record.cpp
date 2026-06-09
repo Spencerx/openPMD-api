@@ -24,21 +24,26 @@
 #include "openPMD/ThrowError.hpp"
 #include "openPMD/UnitDimension.hpp"
 #include "openPMD/backend/BaseRecord.hpp"
+#include "openPMD/backend/scientific_defaults/ConfigAttribute.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 #include <iostream>
 
 namespace openPMD
 {
-Record::Record()
+void Record::visitHierarchy(HierarchyVisitor &v, bool recursive)
 {
-    setTimeOffset(0.f);
+    visitHierarchyImpl<Record>(v, recursive);
 }
+Record::Record() = default;
 
 Record &Record::setUnitDimension(unit_representations::AsMap const &udim)
 {
     if (!udim.empty())
     {
-        std::array<double, 7> tmpUnitDimension = this->unitDimension();
+        std::array<double, 7> tmpUnitDimension =
+            this->containsAttribute("unitDimension") ? this->unitDimension()
+                                                     : std::array<double, 7>{};
         for (auto const &entry : udim)
             tmpUnitDimension[static_cast<uint8_t>(entry.first)] = entry.second;
         setAttribute("unitDimension", tmpUnitDimension);
@@ -121,7 +126,7 @@ auto Record::read() -> internal::HomogenizeExtents
             /* using operator[] will incorrectly update parent */
             try
             {
-                T_RecordComponent::read(/* require_unit_si = */ true);
+                T_RecordComponent::read();
             }
             catch (error::ReadError const &err)
             {
@@ -149,7 +154,7 @@ auto Record::read() -> internal::HomogenizeExtents
             rc.get().m_isConstant = true;
             try
             {
-                rc.read(/* require_unit_si = */ true);
+                rc.read();
             }
             catch (error::ReadError const &err)
             {
@@ -178,7 +183,7 @@ auto Record::read() -> internal::HomogenizeExtents
             rc.setWritten(true, Attributable::EnqueueAsynchronously::No);
             try
             {
-                rc.read(/* require_unit_si = */ true);
+                rc.read();
             }
             catch (error::ReadError const &err)
             {
@@ -192,11 +197,36 @@ auto Record::read() -> internal::HomogenizeExtents
         }
     }
 
-    readBase();
-
     readAttributes(ReadMode::FullyReread);
+    internal::ScientificDefaults::readDefaults(*this, IOHandler()->m_standard);
+
     return res;
 }
 
+void Record::scientificDefaults_impl(
+    internal::WriteOrRead wor, OpenpmdStandard standard)
+{
+    using namespace internal;
+    auto float_types = get_float_types();
+    auto int_types = get_int_types();
+
+    defaultAttribute(*this, "timeOffset")
+        .template withSetter<Record>(0.f, &Record::setTimeOffset)
+        .withReader(float_types, require_scalar)
+        .withReader(int_types, require_type<double>())(wor);
+
+    auto const &keyInParent = writable().ownKeyWithinParent;
+    if (keyInParent == "position" || keyInParent == "positionOffset")
+    {
+        defaultAttribute(*this, "unitDimension")
+            .template withSetter<Record, unit_representations::AsMap const &>(
+                []() {
+                    return unit_representations::AsMap{{UnitDimension::L, 1.0}};
+                },
+                &Record::setUnitDimension)(wor);
+    }
+
+    BaseRecord<RecordComponent>::scientificDefaults_impl(wor, standard);
+}
 template class BaseRecord<RecordComponent>;
 } // namespace openPMD

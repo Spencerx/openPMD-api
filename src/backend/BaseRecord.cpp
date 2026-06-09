@@ -21,6 +21,7 @@
 #include "openPMD/backend/BaseRecord.hpp"
 #include "openPMD/backend/MeshRecordComponent.hpp"
 #include "openPMD/backend/PatchRecordComponent.hpp"
+#include "openPMD/backend/scientific_defaults/ConfigAttribute.hpp"
 
 #include <optional>
 
@@ -34,14 +35,7 @@ namespace openPMD
 namespace internal
 {
     template <typename T_elem, typename T_RecordComponentData>
-    BaseRecordData<T_elem, T_RecordComponentData>::BaseRecordData()
-    {
-        Attributable impl;
-        impl.setData({this, [](auto const *) {}});
-        impl.setAttribute(
-            "unitDimension",
-            std::array<double, 7>{{0., 0., 0., 0., 0., 0., 0.}});
-    }
+    BaseRecordData<T_elem, T_RecordComponentData>::BaseRecordData() = default;
 
 #define OPENPMD_INSTANTIATE(recordcomponenttype)                               \
     template class BaseRecordData<                                             \
@@ -773,45 +767,6 @@ inline bool BaseRecord<T_elem>::scalar() const
 }
 
 template <typename T_elem>
-inline void BaseRecord<T_elem>::readBase()
-{
-    using DT = Datatype;
-    Parameter<Operation::READ_ATT> aRead;
-
-    aRead.name = "unitDimension";
-    this->IOHandler()->enqueue(IOTask(this, aRead));
-    this->IOHandler()->flush(internal::defaultFlushParams);
-    if (auto val = Attribute(Attribute::from_any, *aRead.m_resource)
-                       .getOptional<std::array<double, 7>>();
-        val.has_value())
-        this->setAttribute("unitDimension", val.value());
-    else
-        throw std::runtime_error(
-            "Unexpected Attribute datatype for 'unitDimension'");
-
-    aRead.name = "timeOffset";
-    this->IOHandler()->enqueue(IOTask(this, aRead));
-    this->IOHandler()->flush(internal::defaultFlushParams);
-    if (*aRead.dtype == DT::FLOAT)
-        this->setAttribute(
-            "timeOffset",
-            Attribute(Attribute::from_any, *aRead.m_resource).get<float>());
-    else if (*aRead.dtype == DT::DOUBLE)
-        this->setAttribute(
-            "timeOffset",
-            Attribute(Attribute::from_any, *aRead.m_resource).get<double>());
-    // conversion cast if a backend reports an integer type
-    else if (
-        auto val = Attribute(Attribute::from_any, *aRead.m_resource)
-                       .getOptional<double>();
-        val.has_value())
-        this->setAttribute("timeOffset", val.value());
-    else
-        throw std::runtime_error(
-            "Unexpected Attribute datatype for 'timeOffset'");
-}
-
-template <typename T_elem>
 inline void BaseRecord<T_elem>::flush(
     std::string const &name, internal::FlushParams const &flushParams)
 {
@@ -821,11 +776,16 @@ inline void BaseRecord<T_elem>::flush(
     }
 
     if (!this->written() && this->empty() && !this->datasetDefined())
-        throw std::runtime_error(
-            "A Record can not be written without any contained "
-            "RecordComponents: " +
-            name);
-
+    {
+        // Verify upon ScientificDefaults::finalize() that the Record has been
+        // populated. For now, we will assume that data will come later; ignore
+        // this Record at the moment.
+        //
+        // If any of the properties above will change, the Record will become
+        // dirty through it.
+        this->setDirty(false);
+        return;
+    }
     /*
      * Defensive programming. Normally, this error should yield as soon as
      * possible.
@@ -861,6 +821,23 @@ void BaseRecord<T_elem>::eraseScalar()
     this->writable().abstractFilePosition.reset();
 }
 
+template <typename T_elem>
+void BaseRecord<T_elem>::scientificDefaults_impl(
+    internal::WriteOrRead wor, OpenpmdStandard standard)
+{
+    using namespace internal;
+    auto float_types = get_float_types();
+
+    this->defaultAttribute(*this, "unitDimension")
+        .withGenericSetter(unit_representations::AsArray{})
+        .withReader(float_types, require_type<unit_representations::AsArray>())(
+            wor);
+
+    if (scalar())
+    {
+        T_elem::scientificDefaults_impl(wor, standard);
+    }
+}
 template <typename T_elem>
 BaseRecord<T_elem>::~BaseRecord() = default;
 

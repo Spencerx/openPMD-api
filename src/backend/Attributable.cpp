@@ -19,6 +19,7 @@
  * If not, see <http://www.gnu.org/licenses/>.
  */
 #include "openPMD/backend/Attributable.hpp"
+#include "openPMD/Error.hpp"
 #include "openPMD/IO/AbstractIOHandler.hpp"
 #include "openPMD/Iteration.hpp"
 #include "openPMD/ParticleSpecies.hpp"
@@ -27,6 +28,7 @@
 #include "openPMD/auxiliary/DerefDynamicCast.hpp"
 #include "openPMD/auxiliary/StringManip.hpp"
 #include "openPMD/backend/Attribute.hpp"
+#include "openPMD/backend/HierarchyVisitorImpl.hpp"
 
 #include <algorithm>
 #include <complex>
@@ -71,6 +73,36 @@ Attributable::Attributable()
 
 Attributable::Attributable(NoInit) noexcept
 {}
+
+bool Attributable::setAttribute(std::string const &key, Attribute attribute)
+{
+    auto &attri = get();
+    if (IOHandler() &&
+        IOHandler()->m_seriesStatus == internal::SeriesStatus::Default &&
+        Access::READ_ONLY == IOHandler()->m_frontendAccess)
+    {
+        auxiliary::OutOfRangeMsg const out_of_range_msg(
+            "Attribute", "can not be set (read-only).");
+        error::throwNoSuchAttribute(out_of_range_msg(key));
+    }
+
+    setDirty(true);
+    auto it = attri.m_attributes.lower_bound(key);
+    if (it != attri.m_attributes.end() &&
+        !attri.m_attributes.key_comp()(key, it->first))
+    {
+        // key already exists in map, just replace the value
+        it->second = std::move(attribute);
+        return true;
+    }
+    else
+    {
+        // emplace a new map element for an unknown key
+        attri.m_attributes.emplace_hint(
+            it, std::make_pair(key, std::move(attribute)));
+        return false;
+    }
+}
 
 Attribute Attributable::getAttribute(std::string const &key) const
 {
@@ -263,6 +295,47 @@ auto Attributable::myPath() const -> MyPath
 void Attributable::touch()
 {
     setDirtyRecursive(true);
+}
+
+void Attributable::visitHierarchy(HierarchyVisitor &, bool)
+{
+    throw error::Internal(
+        "[Attributable::visitHierarchy] Cannot call this on base class.");
+}
+
+void Attributable::populateMissingMetadata(bool recursive)
+{
+    auto standard = IOHandler()->m_standard;
+    visitHierarchyFromLambda(
+        [standard](auto &component) {
+            using ComponentType = std::remove_reference_t<decltype(component)>;
+            if constexpr (
+                auxiliary::IsTemplateBaseOf_v<BaseRecord, ComponentType>)
+            {
+                if (component.empty() && !component.datasetDefined())
+                {
+                    std::cerr << "Cannot flush Record without any contained "
+                                 "components:'"
+                              << component.myPath().openPMDPath()
+                              << "'. Will ignore.";
+                    if (component.written())
+                    {
+                        std::cerr
+                            << "\n(Note: The Record seems to have been written "
+                               "previously?)";
+                    }
+                    std::cerr << std::endl;
+                    return;
+                }
+            }
+
+            if constexpr (
+                std::is_base_of_v<internal::ScientificDefaults, ComponentType>)
+            {
+                component.writeDefaults(standard);
+            }
+        },
+        recursive);
 }
 
 OpenpmdStandard Attributable::openPMDStandard() const

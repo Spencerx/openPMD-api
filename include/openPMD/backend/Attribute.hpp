@@ -115,9 +115,42 @@ public:
     template <typename U>
     std::optional<U> getOptional() const;
 
-private:
+    /** Retrieve a stored specific Attribute and cast if convertible.
+     *  Like Attribute::get<>(), but returns an exception instead of throwing it
+     * if no conversion is possible.
+     *
+     * @note This performs a static_cast and might introduce precision loss if
+     *       requested. Check dtype explicitly beforehand if needed.
+     *
+     * @tparam  U   Type of the object to be casted to.
+     * @return  Copy of the retrieved object, casted to type U.
+     *          A runtime_error (as return value, no thrown) if no conversion is
+     *          possible.
+     */
     template <typename U>
-    std::variant<U, std::runtime_error> get_impl() const;
+    std::variant<U, std::runtime_error> getOrError() const;
+
+    /**
+     * Force this attribute into a vector type.
+     * If it is scalar, convert to a vector with a single element.
+     * If it is an array, convert it to a vector.
+     *
+     * @return On success, a new Attribute with underlying vector type.
+     *         On failure, an error with a description of what went wrong
+     *         (e.g. when the base type is bool).
+     */
+    [[nodiscard]] std::variant<Attribute, std::runtime_error>
+    requireVector() const;
+    /**
+     * Force this attribute into a scalar type.
+     * If it is a vector attribute with a single entry, convert to a scalar.
+     *
+     * @return On success, a new Attribute with underlying scalar type.
+     *         On failure, an error with a description of what went wrong
+     *         (e.g. when a vector with size other than 1 was provided).
+     */
+    [[nodiscard]] std::variant<Attribute, std::runtime_error>
+    requireScalar() const;
 };
 
 namespace detail

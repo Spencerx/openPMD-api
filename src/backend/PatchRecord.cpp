@@ -20,22 +20,36 @@
  */
 #include "openPMD/backend/PatchRecord.hpp"
 #include "openPMD/auxiliary/Memory.hpp"
+#include "openPMD/backend/scientific_defaults/ScientificDefaults.hpp"
 
 #include <iostream>
 
 namespace openPMD
 {
 PatchRecord &
-PatchRecord::setUnitDimension(std::map<UnitDimension, double> const &udim)
+PatchRecord::setUnitDimension(unit_representations::AsMap const &udim)
 {
     if (!udim.empty())
     {
-        std::array<double, 7> tmpUnitDimension = this->unitDimension();
+        std::array<double, 7> tmpUnitDimension =
+            this->containsAttribute("unitDimension") ? this->unitDimension()
+                                                     : std::array<double, 7>{};
         for (auto const &entry : udim)
             tmpUnitDimension[static_cast<uint8_t>(entry.first)] = entry.second;
         setAttribute("unitDimension", tmpUnitDimension);
     }
     return *this;
+}
+PatchRecord &
+PatchRecord::setUnitDimension(unit_representations::AsArray const &udim)
+{
+    setAttribute("unitDimension", udim);
+    return *this;
+}
+
+void PatchRecord::visitHierarchy(HierarchyVisitor &v, bool recursive)
+{
+    visitHierarchyImpl<PatchRecord>(v, recursive);
 }
 
 void PatchRecord::flush_impl(
@@ -64,26 +78,6 @@ void PatchRecord::flush_impl(
 
 void PatchRecord::read()
 {
-    Parameter<Operation::READ_ATT> aRead;
-    aRead.name = "unitDimension";
-    IOHandler()->enqueue(IOTask(this, aRead));
-    IOHandler()->flush(internal::defaultFlushParams);
-
-    if (auto val = Attribute(Attribute::from_any, *aRead.m_resource)
-                       .getOptional<std::array<double, 7> >();
-        val.has_value())
-        this->setAttribute("unitDimension", val.value());
-    else
-        throw error::ReadError(
-            error::AffectedObject::Attribute,
-            error::Reason::UnexpectedContent,
-            {},
-            "Unexpected Attribute datatype for 'unitDimension' (expected an "
-            "array of seven floating point numbers, found " +
-                datatypeToString(
-                    Attribute(Attribute::from_any, *aRead.m_resource).dtype) +
-                ")");
-
     Parameter<Operation::LIST_DATASETS> dList;
     IOHandler()->enqueue(IOTask(this, dList));
     IOHandler()->flush(internal::defaultFlushParams);
@@ -101,7 +95,7 @@ void PatchRecord::read()
         prc.setWritten(true, Attributable::EnqueueAsynchronously::No);
         try
         {
-            prc.read(/* require_unit_si = */ false);
+            prc.read();
         }
         catch (error::ReadError const &err)
         {
@@ -112,6 +106,10 @@ void PatchRecord::read()
             this->container().erase(component_name);
         }
     }
+
+    readAttributes(ReadMode::FullyReread);
+    internal::ScientificDefaults::readDefaults(*this, IOHandler()->m_standard);
+
     setDirty(false);
 }
 } // namespace openPMD

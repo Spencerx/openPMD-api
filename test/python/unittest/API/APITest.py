@@ -2333,7 +2333,7 @@ class APITest(unittest.TestCase):
 
         series_read_write = io.Series(file, io.Access.read_write)
         E_x = series_read_write.iterations[0].meshes["E"]["x"]
-        E_x[:] = np.array([45])
+        E_x[:] = np.array([45], dtype=E_x.dtype)
         series_read_write.close()
 
         series_read_again = io.Series(file, io.Access.read_only)

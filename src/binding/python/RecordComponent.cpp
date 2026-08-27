@@ -1020,9 +1020,10 @@ void init_RecordComponent(py::module &m)
         .def(
             "make_empty",
             [](RecordComponent &rc,
-               pybind11::dtype const &dt,
+               pybind11::object dt,
                uint8_t dimensionality) {
-                return rc.makeEmpty(dtype_from_numpy(dt), dimensionality);
+                return rc.makeEmpty(
+                    dtype_from_numpy(std::move(dt)), dimensionality);
             })
 
         // deprecated: pass-through C++ API

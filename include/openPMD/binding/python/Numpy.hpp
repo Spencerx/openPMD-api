@@ -98,6 +98,44 @@ inline Datatype dtype_from_numpy(pybind11::dtype const dt)
     }
 }
 
+inline Datatype dtype_from_numpy(pybind11::object dt)
+{
+    if (py::isinstance<pybind11::dtype>(dt))
+    {
+        return dtype_from_numpy(py::cast<pybind11::dtype>(std::move(dt)));
+    }
+    else
+    {
+        pybind11::module_ numpy;
+        try
+        {
+            numpy = pybind11::module_::import("numpy");
+        }
+        catch (std::exception const &e)
+        {
+            throw std::runtime_error(
+                std::string(
+                    "dtype_from_numpy: Cannot convert from object type to "
+                    "datatype without numpy, failed importing: ") +
+                e.what());
+        }
+        pybind11::object create_dtype = numpy.attr("dtype");
+        pybind11::object dtype_obj;
+        try
+        {
+            dtype_obj = create_dtype(std::move(dt));
+        }
+        catch (std::exception const &e)
+        {
+            throw std::runtime_error(
+                std::string("dtype_from_numpy: Failed to create dtype from: ") +
+                pybind11::str(dt).cast<std::string>() +
+                std::string(", error: ") + e.what());
+        }
+        return dtype_from_numpy(py::cast<pybind11::dtype>(dtype_obj));
+    }
+}
+
 /** Return openPMD::Datatype from py::buffer_info::format
  */
 inline Datatype dtype_from_bufferformat(std::string const &fmt)

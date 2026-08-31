@@ -33,6 +33,7 @@
 #include "openPMD/backend/Container.hpp"
 #include "openPMD/backend/HierarchyVisitor.hpp"
 #include "openPMD/backend/ParsePreference.hpp"
+#include "openPMD/backend/PerIterationData.hpp"
 #include "openPMD/config.hpp"
 #include "openPMD/snapshots/Snapshots.hpp"
 #include "openPMD/version.hpp"
@@ -205,14 +206,18 @@ namespace internal
          * Detected IO format (backend).
          */
         Format m_format;
-        /**
-         *  Whether a step is currently active for this iteration.
-         * Used for group-based iteration layout, see SeriesData.hpp for
-         * iteration-based layout.
-         * Access via stepStatus() method to automatically select the correct
-         * one among both flags.
+
+        /*
+         * This stores data items that are:
+         *
+         * 1. global in group and variable encodings
+         * 2. per-iteration in file encoding
+         *
+         * The struct is stored as part of the Series and as part of each
+         * Iteration. Access must be distinguished by iteration encoding.
          */
-        StepStatus m_stepStatus = StepStatus::NoStep;
+        PerIterationData m_perIterationData;
+
         /**
          * True if a user opts into lazy parsing.
          */
@@ -261,7 +266,6 @@ namespace internal
 
         struct RankTableData
         {
-            Attributable m_attributable;
             std::variant<
                 NoSourceSpecified,
                 SourceSpecifiedViaJSON,
@@ -909,9 +913,7 @@ OPENPMD_private
         iterations_iterator end,
         internal::FlushParams const &flushParams,
         bool flushIOHandler = true);
-    void flushMeshesPath();
-    void flushParticlesPath();
-    void flushRankTable();
+    void flushRankTable(FlushLevel, Attributable &attributable);
     /* Parameter `read_only_this_single_iteration` used for reopening an
      * Iteration after closing it.
      */
@@ -994,8 +996,10 @@ OPENPMD_private
      *        least one step was written.
      *
      * @param doFlush If true, flush the IO handler.
+     * @param l This operation must only run at flush level write_datasets,
+     *          Noop otherwise.
      */
-    void flushStep(bool doFlush);
+    void flushStep(bool doFlush, FlushLevel l);
 
     /*
      * setIterationEncoding() should only be called by users of our public API,

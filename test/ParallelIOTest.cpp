@@ -37,12 +37,31 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #if !openPMD_HAVE_MPI
-TEST_CASE("none", "[parallel]")
+#define PARALLEL_TEST_CASE(name, tags) TEST_CASE(#name, tags)
+
+PARALLEL_TEST_CASE(none, "[parallel]")
 {}
 
 #else
 
 #include <mpi.h>
+
+#define PARALLEL_TEST_CASE(name, tags)                                         \
+    static void openPMD_parallel_##name();                                     \
+    TEST_CASE(#name, tags)                                                     \
+    {                                                                          \
+        MPI_Barrier(MPI_COMM_WORLD);                                           \
+        int rank;                                                              \
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);                                  \
+        if (rank == 0)                                                         \
+        {                                                                      \
+            std::cout << "\nStarting test '" << #name << "'.\n" << std::endl;  \
+        }                                                                      \
+        MPI_Barrier(MPI_COMM_WORLD);                                           \
+        openPMD_parallel_##name();                                             \
+        MPI_Barrier(MPI_COMM_WORLD);                                           \
+    }                                                                          \
+    static void openPMD_parallel_##name()
 
 #if openPMD_HAVE_ADIOS2
 #include <adios2.h>
@@ -80,7 +99,7 @@ TEST_CASE("none", "[parallel]")
 
 using namespace openPMD;
 
-TEST_CASE("parallel_multi_series_test", "[parallel]")
+PARALLEL_TEST_CASE(parallel_multi_series_test, "[parallel]")
 {
     std::list<Series> allSeries;
 
@@ -223,7 +242,7 @@ void write_test_zero_extent(
 #endif
 
 #if openPMD_HAVE_HDF5 && openPMD_HAVE_MPI
-TEST_CASE("git_hdf5_sample_content_test", "[parallel][hdf5]")
+PARALLEL_TEST_CASE(git_hdf5_sample_content_test, "[parallel][hdf5]")
 {
     int mpi_rank{-1};
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
@@ -307,7 +326,7 @@ TEST_CASE("git_hdf5_sample_content_test", "[parallel][hdf5]")
     }
 }
 
-TEST_CASE("hdf5_write_test", "[parallel][hdf5]")
+PARALLEL_TEST_CASE(hdf5_write_test, "[parallel][hdf5]")
 {
     int mpi_s{-1};
     int mpi_r{-1};
@@ -377,13 +396,13 @@ TEST_CASE("hdf5_write_test", "[parallel][hdf5]")
     o.flush("hdf5.independent_stores = false");
 }
 
-TEST_CASE("hdf5_write_test_zero_extent", "[parallel][hdf5]")
+PARALLEL_TEST_CASE(hdf5_write_test_zero_extent, "[parallel][hdf5]")
 {
     write_test_zero_extent(false, "h5", true, true);
     write_test_zero_extent(true, "h5", true, true);
 }
 
-TEST_CASE("hdf5_write_test_skip_chunk", "[parallel][hdf5]")
+PARALLEL_TEST_CASE(hdf5_write_test_skip_chunk, "[parallel][hdf5]")
 {
     //! @todo add via JSON option instead of environment read
     auto const hdf5_collective =
@@ -397,7 +416,7 @@ TEST_CASE("hdf5_write_test_skip_chunk", "[parallel][hdf5]")
         REQUIRE(true);
 }
 
-TEST_CASE("hdf5_write_test_skip_declare", "[parallel][hdf5]")
+PARALLEL_TEST_CASE(hdf5_write_test_skip_declare, "[parallel][hdf5]")
 {
     //! @todo add via JSON option instead of environment read
     auto const hdf5_collective =
@@ -413,7 +432,7 @@ TEST_CASE("hdf5_write_test_skip_declare", "[parallel][hdf5]")
 
 #else
 
-TEST_CASE("no_parallel_hdf5", "[parallel][hdf5]")
+PARALLEL_TEST_CASE(no_parallel_hdf5, "[parallel][hdf5]")
 {
     REQUIRE(true);
 }
@@ -495,7 +514,7 @@ void available_chunks_test(std::string const &file_ending)
     }
 }
 
-TEST_CASE("available_chunks_test", "[parallel][adios]")
+PARALLEL_TEST_CASE(available_chunks_test, "[parallel][adios]")
 {
     available_chunks_test("bp");
 }
@@ -550,14 +569,14 @@ void extendDataset(std::string const &ext, std::string const &jsonConfig)
     }
 }
 
-TEST_CASE("extend_dataset", "[parallel]")
+PARALLEL_TEST_CASE(extend_dataset, "[parallel]")
 {
     extendDataset("bp", R"({"backend": "adios2"})");
 }
 #endif
 
 #if openPMD_HAVE_ADIOS2 && openPMD_HAVE_MPI
-TEST_CASE("adios_write_test", "[parallel][adios]")
+PARALLEL_TEST_CASE(adios_write_test, "[parallel][adios]")
 {
     Series o = Series(
         "../samples/parallel_write.bp",
@@ -645,25 +664,25 @@ TEST_CASE("adios_write_test", "[parallel][adios]")
     }
 }
 
-TEST_CASE("adios_write_test_zero_extent", "[parallel][adios]")
+PARALLEL_TEST_CASE(adios_write_test_zero_extent, "[parallel][adios]")
 {
     write_test_zero_extent(false, "bp", true, true);
     write_test_zero_extent(true, "bp", true, true);
 }
 
-TEST_CASE("adios_write_test_skip_chunk", "[parallel][adios]")
+PARALLEL_TEST_CASE(adios_write_test_skip_chunk, "[parallel][adios]")
 {
     write_test_zero_extent(false, "bp", false, true);
     write_test_zero_extent(true, "bp", false, true);
 }
 
-TEST_CASE("adios_write_test_skip_declare", "[parallel][adios]")
+PARALLEL_TEST_CASE(adios_write_test_skip_declare, "[parallel][adios]")
 {
     write_test_zero_extent(false, "bp", false, false);
     write_test_zero_extent(true, "bp", false, false);
 }
 
-TEST_CASE("hzdr_adios_sample_content_test", "[parallel][adios2][bp3]")
+PARALLEL_TEST_CASE(hzdr_adios_sample_content_test, "[parallel][adios2][bp3]")
 {
     int mpi_rank{-1};
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
@@ -743,7 +762,7 @@ void write_4D_test(std::string const &file_ending)
     o.flush();
 }
 
-TEST_CASE("write_4D_test", "[parallel]")
+PARALLEL_TEST_CASE(write_4D_test, "[parallel]")
 {
     for (auto const &t : getBackends())
     {
@@ -776,7 +795,7 @@ void write_makeconst_some(std::string const &file_ending)
         E_x.makeConstant(42);
 }
 
-TEST_CASE("write_makeconst_some", "[parallel]")
+PARALLEL_TEST_CASE(write_makeconst_some, "[parallel]")
 {
     for (auto const &t : getBackends())
     {
@@ -883,7 +902,7 @@ void close_iteration_test(std::string const &file_ending)
     }
 }
 
-TEST_CASE("close_iteration_test", "[parallel]")
+PARALLEL_TEST_CASE(close_iteration_test, "[parallel]")
 {
     for (auto const &t : getBackends())
     {
@@ -1002,7 +1021,7 @@ void file_based_write_read(std::string const &file_ending)
     }
 }
 
-TEST_CASE("file_based_write_read", "[parallel]")
+PARALLEL_TEST_CASE(file_based_write_read, "[parallel]")
 {
     for (auto const &t : getBackends())
     {
@@ -1181,7 +1200,7 @@ void hipace_like_write(std::string const &file_ending)
     }
 }
 
-TEST_CASE("hipace_like_write", "[parallel]")
+PARALLEL_TEST_CASE(hipace_like_write, "[parallel]")
 {
     for (auto const &t : getBackends())
     {
@@ -1191,7 +1210,7 @@ TEST_CASE("hipace_like_write", "[parallel]")
 #endif
 
 #if openPMD_HAVE_ADIOS2 && openPMD_HAVE_MPI
-TEST_CASE("independent_write_with_collective_flush", "[parallel]")
+PARALLEL_TEST_CASE(independent_write_with_collective_flush, "[parallel]")
 {
     Series write(
         "../samples/independent_write_with_collective_flush.bp5",
@@ -1225,7 +1244,7 @@ TEST_CASE("independent_write_with_collective_flush", "[parallel]")
 #endif
 
 #if openPMD_HAVE_MPI
-TEST_CASE("unavailable_backend", "[core][parallel]")
+PARALLEL_TEST_CASE(unavailable_backend, "[core][parallel]")
 {
 #if !openPMD_HAVE_ADIOS2
     {
@@ -1373,7 +1392,7 @@ void adios2_streaming(bool variableBasedLayout)
     }
 }
 
-TEST_CASE("adios2_streaming", "[pseudoserial][adios2]")
+PARALLEL_TEST_CASE(adios2_streaming, "[pseudoserial][adios2]")
 {
 #if HAS_ADIOS_2_9
     adios2_streaming(true);
@@ -1381,7 +1400,7 @@ TEST_CASE("adios2_streaming", "[pseudoserial][adios2]")
     adios2_streaming(false);
 }
 
-TEST_CASE("parallel_adios2_json_config", "[parallel][adios2]")
+PARALLEL_TEST_CASE(parallel_adios2_json_config, "[parallel][adios2]")
 {
     int size{-1};
     int rank{-1};
@@ -1592,7 +1611,7 @@ void adios2_ssc()
     }
 }
 
-TEST_CASE("adios2_ssc", "[parallel][adios2]")
+PARALLEL_TEST_CASE(adios2_ssc, "[parallel][adios2]")
 {
     adios2_ssc();
 }
@@ -1918,7 +1937,7 @@ void append_mode(
 #endif
 }
 
-TEST_CASE("append_mode", "[serial]")
+PARALLEL_TEST_CASE(append_mode, "[serial]")
 {
     for (auto const &t : testedFileExtensions())
     {
@@ -2121,7 +2140,7 @@ void joined_dim(std::string const &ext)
     }
 }
 
-TEST_CASE("joined_dim", "[parallel]")
+PARALLEL_TEST_CASE(joined_dim, "[parallel]")
 {
 #if 100000000 * ADIOS2_VERSION_MAJOR + 1000000 * ADIOS2_VERSION_MINOR +        \
         10000 * ADIOS2_VERSION_PATCH + 100 * ADIOS2_VERSION_TWEAK >=           \
@@ -2146,7 +2165,7 @@ TEST_CASE("joined_dim", "[parallel]")
 
 #if openPMD_HAVE_ADIOS2_BP5
 // Parallel version of the same test from SerialIOTest.cpp
-TEST_CASE("adios2_flush_via_step")
+PARALLEL_TEST_CASE(adios2_flush_via_step, "[parallel]")
 {
     int size_i(0), rank_i(0);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_i);
@@ -2253,12 +2272,12 @@ TEST_CASE("adios2_flush_via_step")
 }
 #endif
 
-TEST_CASE("read_variablebased_randomaccess")
+PARALLEL_TEST_CASE(read_variablebased_randomaccess, "[parallel]")
 {
     read_variablebased_randomaccess::read_variablebased_randomaccess();
 }
 
-TEST_CASE("iterate_nonstreaming_series", "[serial][adios2]")
+PARALLEL_TEST_CASE(iterate_nonstreaming_series, "[parallel][adios2]")
 {
     iterate_nonstreaming_series::iterate_nonstreaming_series();
 }
@@ -2719,14 +2738,14 @@ void run_test()
 }
 } // namespace adios2_chunk_distribution
 
-TEST_CASE("adios2_chunk_distribution", "[parallel][adios2]")
+PARALLEL_TEST_CASE(adios2_chunk_distribution, "[parallel][adios2]")
 {
     adios2_chunk_distribution::run_test();
 }
 #endif // openPMD_HAVE_ADIOS2 && openPMD_HAVE_MPI
 
 #if openPMD_HAVE_MPI
-TEST_CASE("bug_1655_bp5_writer_hangup", "[parallel]")
+PARALLEL_TEST_CASE(bug_1655_bp5_writer_hangup, "[parallel]")
 {
     bug_1655_bp5_writer_hangup::bug_1655_bp5_writer_hangup();
 }

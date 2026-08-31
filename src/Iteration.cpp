@@ -280,16 +280,6 @@ void Iteration::flushFileBased(
         fCreate.name = filename;
         IOHandler()->enqueue(IOTask(&s.writable(), fCreate));
 
-        /*
-         * If it was written before, then in the context of another iteration.
-         */
-        auto &attr = s.get().m_rankTable.m_attributable;
-        attr.setWritten(false, Attributable::EnqueueAsynchronously::Both);
-        s.get()
-            .m_rankTable.m_attributable.get()
-            .m_writable.abstractFilePosition.reset();
-        s.flushRankTable();
-
         /* create basePath */
         Parameter<Operation::CREATE_PATH> pCreate;
         pCreate.path = auxiliary::replace_first(s.basePath(), "%T/", "");
@@ -306,15 +296,16 @@ void Iteration::flushFileBased(
         s.openIteration(i, *this);
     }
 
-    switch (flushParams.flushLevel)
+    auto &rankTableAttributable =
+        get().m_perIterationData.m_rankTableAttributable;
+    if (!rankTableAttributable.written())
     {
-    case FlushLevel::CreateOrOpenFiles:
-        break;
-    case FlushLevel::SkeletonOnly:
-    case FlushLevel::InternalFlush:
-    case FlushLevel::UserFlush:
+        s.flushRankTable(flushParams.flushLevel, rankTableAttributable);
+    }
+
+    if (flush_level::flush_hierarchy(flushParams.flushLevel))
+    {
         flush(flushParams);
-        break;
     }
 }
 
@@ -329,15 +320,9 @@ void Iteration::flushGroupBased(
         IOHandler()->enqueue(IOTask(this, pCreate));
     }
 
-    switch (flushParams.flushLevel)
+    if (flush_level::flush_hierarchy(flushParams.flushLevel))
     {
-    case FlushLevel::CreateOrOpenFiles:
-        break;
-    case FlushLevel::SkeletonOnly:
-    case FlushLevel::InternalFlush:
-    case FlushLevel::UserFlush:
         flush(flushParams);
-        break;
     }
 }
 
@@ -352,18 +337,14 @@ void Iteration::flushVariableBased(
         IOHandler()->enqueue(IOTask(this, pOpen));
     }
 
-    switch (flushParams.flushLevel)
+    if (!flush_level::flush_hierarchy(flushParams.flushLevel))
     {
-    case FlushLevel::CreateOrOpenFiles:
         return;
-    case FlushLevel::SkeletonOnly:
-    case FlushLevel::InternalFlush:
-    case FlushLevel::UserFlush:
-        flush(flushParams);
-        break;
     }
 
-    if (!written())
+    flush(flushParams);
+
+    if (!written() && flush_level::write_datasets(flushParams.flushLevel))
     {
         /* create iteration path */
         Parameter<Operation::OPEN_PATH> pOpen;
@@ -395,7 +376,7 @@ void Iteration::flush(internal::FlushParams const &flushParams)
             m.second.flush(m.first, flushParams);
         for (auto &species : particles)
             species.second.flush(species.first, flushParams);
-        setDirty(false);
+        determineUnsetDirty(flushParams.flushLevel);
     }
     else
     {
@@ -403,16 +384,28 @@ void Iteration::flush(internal::FlushParams const &flushParams)
          * meshesPath and particlesPath are stored there */
         Series s = retrieveSeries();
 
+        auto set_and_get_mp_path =
+            [&](char const *attrName,
+                char const *defaultVal,
+                Series &(Series::*set)(std::string const &)) -> std::string {
+            if (s.containsAttribute(attrName))
+            {
+                return s.getAttribute(attrName).get<std::string>();
+            }
+            else
+            {
+                (s.*set)(defaultVal);
+                return defaultVal;
+            }
+        };
+
         if (!meshes.empty() || s.containsAttribute("meshesPath"))
         {
-            if (!s.containsAttribute("meshesPath"))
-            {
-                s.setMeshesPath("meshes/");
-                s.flushMeshesPath();
-            }
+            auto meshesPath = set_and_get_mp_path(
+                "meshesPath", "meshes/", &Series::setMeshesPath);
             if (meshes.dirtyRecursive())
             {
-                meshes.flush(s.meshesPath(), flushParams);
+                meshes.flush(meshesPath, flushParams);
                 for (auto &m : meshes)
                 {
                     m.second.flush(m.first, flushParams);
@@ -426,14 +419,11 @@ void Iteration::flush(internal::FlushParams const &flushParams)
 
         if (!particles.empty() || s.containsAttribute("particlesPath"))
         {
-            if (!s.containsAttribute("particlesPath"))
-            {
-                s.setParticlesPath("particles/");
-                s.flushParticlesPath();
-            }
+            auto particlesPath = set_and_get_mp_path(
+                "particlesPath", "particles/", &Series::setParticlesPath);
             if (particles.dirtyRecursive())
             {
-                particles.flush(s.particlesPath(), flushParams);
+                particles.flush(particlesPath, flushParams);
                 for (auto &species : particles)
                 {
                     species.second.flush(species.first, flushParams);
@@ -449,9 +439,9 @@ void Iteration::flush(internal::FlushParams const &flushParams)
     }
     if (flushParams.flushLevel != FlushLevel::SkeletonOnly)
     {
-        setDirty(false);
-        meshes.setDirty(false);
-        particles.setDirty(false);
+        determineUnsetDirty(flushParams.flushLevel);
+        meshes.determineUnsetDirty(flushParams.flushLevel);
+        particles.determineUnsetDirty(flushParams.flushLevel);
     }
 }
 
@@ -785,7 +775,7 @@ auto Iteration::beginStep(
     }
     else
     {
-        series.get().m_stepStatus = StepStatus::DuringStep;
+        series.get().m_perIterationData.m_stepStatus = StepStatus::DuringStep;
         status = series.advance(AdvanceMode::BEGINSTEP);
     }
 
@@ -888,10 +878,10 @@ StepStatus Iteration::getStepStatus()
     {
         using IE = IterationEncoding;
     case IE::fileBased:
-        return get().m_stepStatus;
+        return get().m_perIterationData.m_stepStatus;
     case IE::groupBased:
     case IE::variableBased:
-        return s.get().m_stepStatus;
+        return s.get().m_perIterationData.m_stepStatus;
     default:
         throw std::runtime_error("[Iteration] unreachable");
     }
@@ -904,11 +894,11 @@ void Iteration::setStepStatus(StepStatus status)
     {
         using IE = IterationEncoding;
     case IE::fileBased:
-        get().m_stepStatus = status;
+        get().m_perIterationData.m_stepStatus = status;
         break;
     case IE::groupBased:
     case IE::variableBased:
-        s.get().m_stepStatus = status;
+        s.get().m_perIterationData.m_stepStatus = status;
         break;
     default:
         throw std::runtime_error("[Iteration] unreachable");
@@ -920,6 +910,7 @@ void Iteration::linkHierarchy(Writable &w)
     Attributable::linkHierarchy(w);
     meshes.linkHierarchy(this->writable());
     particles.linkHierarchy(this->writable());
+    get().m_perIterationData.m_rankTableAttributable.linkHierarchy(*w.parent);
 }
 
 void Iteration::runDeferredParseAccess()

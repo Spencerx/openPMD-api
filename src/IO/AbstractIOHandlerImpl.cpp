@@ -21,6 +21,8 @@
 
 #include "openPMD/IO/AbstractIOHandlerImpl.hpp"
 
+#include "openPMD/Error.hpp"
+#include "openPMD/IO/AbstractIOHandler.hpp"
 #include "openPMD/IO/IOTask.hpp"
 #include "openPMD/Streaming.hpp"
 #include "openPMD/auxiliary/Environment.hpp"
@@ -87,15 +89,78 @@ void AbstractIOHandlerImpl::writeToStderr([[maybe_unused]] Args &&...args) const
     }
 }
 
-std::future<void> AbstractIOHandlerImpl::flush()
+namespace
+{
+    void verifyFlushType(Operation op, FlushLevel l)
+    {
+        auto do_throw = [&](char const *least_flush_level) {
+            std::stringstream err;
+            err << "Operation " << op << " is not allowed below flush level "
+                << least_flush_level << ", but flush level was " << l << ".";
+            throw error::Internal(err.str());
+        };
+        switch (op)
+        {
+        case Operation::ADVANCE:
+        case Operation::CREATE_FILE:
+        case Operation::CHECK_FILE:
+        case Operation::OPEN_FILE:
+        case Operation::CLOSE_FILE:
+        case Operation::DELETE_FILE:
+        case Operation::DEREGISTER:
+        case Operation::TOUCH:
+        case Operation::LIST_ATTS:
+        case Operation::LIST_PATHS:
+        case Operation::OPEN_PATH:
+        case Operation::SET_WRITTEN:
+        case Operation::CREATE_PATH:
+            break;
+        case Operation::CLOSE_PATH:
+        case Operation::DELETE_PATH:
+        case Operation::CREATE_DATASET:
+        case Operation::EXTEND_DATASET:
+        case Operation::OPEN_DATASET:
+        case Operation::DELETE_DATASET:
+        case Operation::LIST_DATASETS:
+            if (!flush_level::flush_hierarchy(l))
+            {
+                do_throw("SkeletonOnly (hierarchy operations)");
+            }
+            break;
+        case Operation::GET_BUFFER_VIEW:
+        case Operation::DELETE_ATT:
+        case Operation::WRITE_ATT:
+        case Operation::READ_ATT:
+        case Operation::READ_ATT_ALLSTEPS:
+        case Operation::AVAILABLE_CHUNKS:
+            if (!flush_level::write_attributes(l))
+            {
+                do_throw("InternalFlush (metadata operations)");
+            }
+            break;
+        case Operation::WRITE_DATASET:
+        case Operation::READ_DATASET:
+            if (!flush_level::write_datasets(l))
+            {
+                do_throw("UserFlush (flushpoint operations)");
+            }
+            break;
+        }
+    }
+} // namespace
+
+std::future<void> AbstractIOHandlerImpl::flush(FlushLevel l)
 {
     using namespace auxiliary;
+
+    writeToStderr("\nFLUSHING");
 
     while (!(*m_handler).m_work.empty())
     {
         IOTask &i = (*m_handler).m_work.front();
         try
         {
+            verifyFlushType(i.operation, l);
             switch (i.operation)
             {
                 using O = Operation;
@@ -457,7 +522,12 @@ std::future<void> AbstractIOHandlerImpl::flush()
                 auto &parameter = deref_dynamic_cast<Parameter<O::SET_WRITTEN>>(
                     i.parameter.get());
                 writeToStderr(
-                    "[", i.writable->parent, "->", i.writable, "] SET_WRITTEN");
+                    "[",
+                    i.writable->parent,
+                    "->",
+                    i.writable,
+                    "] SET_WRITTEN ",
+                    parameter.target_status ? "true" : "false");
                 setWritten(i.writable, parameter);
                 break;
             }
@@ -506,6 +576,7 @@ std::future<void> AbstractIOHandlerImpl::flush()
         }
         (*m_handler).m_work.pop();
     }
+    writeToStderr("FLUSHED\n");
     return std::future<void>();
 }
 

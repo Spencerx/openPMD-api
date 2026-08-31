@@ -485,7 +485,7 @@ OPENPMD_protected
     /** @} */
 
     template <bool flush_entire_series>
-    void seriesFlush_impl(internal::FlushParams const &);
+    void seriesFlush_impl(internal::FlushParams const &, bool flush_io_handler);
 
     void flushAttributes(internal::FlushParams const &);
 
@@ -612,6 +612,34 @@ OPENPMD_protected
     bool dirtyRecursive() const
     {
         return writable().dirtyRecursive;
+    }
+    void determineUnsetDirty(FlushLevel fl)
+    {
+        switch (fl)
+        {
+        case FlushLevel::UserFlush:
+            setDirty(false);
+            break;
+        // FlushLevel::InternalFlush is only used for directly calling the IO
+        // handler and should not bother with middle-end state manipulations
+        case FlushLevel::InternalFlush:
+            // Used for parsing
+            if (IOHandler()->m_seriesStatus == internal::SeriesStatus::Parsing)
+            {
+                throw error::Internal(
+                    "Parsing procedures should directly unset dirty.");
+            }
+            else
+            {
+                throw error::Internal(
+                    "Internal flushes should not unset dirty flags.");
+            }
+            break;
+        case FlushLevel::SkeletonOnly:
+        case FlushLevel::CreateOrOpenFiles:
+            // noop
+            break;
+        }
     }
     void setDirty(bool dirty_in)
     {

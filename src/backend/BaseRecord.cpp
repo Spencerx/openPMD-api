@@ -19,6 +19,7 @@
  * If not, see <http://www.gnu.org/licenses/>.
  */
 #include "openPMD/backend/BaseRecord.hpp"
+#include "openPMD/IO/AbstractIOHandler.hpp"
 #include "openPMD/backend/MeshRecordComponent.hpp"
 #include "openPMD/backend/PatchRecordComponent.hpp"
 #include "openPMD/backend/scientific_defaults/ConfigAttribute.hpp"
@@ -798,10 +799,7 @@ inline void BaseRecord<T_elem>::flush(
     }
 
     this->flush_impl(name, flushParams);
-    if (flushParams.flushLevel != FlushLevel::SkeletonOnly)
-    {
-        this->setDirty(false);
-    }
+    this->determineUnsetDirty(flushParams.flushLevel);
     // flush_impl must take care to correctly set the dirty() flag so this
     // method doesn't do it
 }

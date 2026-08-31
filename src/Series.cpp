@@ -339,10 +339,11 @@ chunk_assignment::RankMeta Series::rankTable([[maybe_unused]] bool collective)
     }
     if (iterationEncoding() == IterationEncoding::fileBased)
     {
-        std::cerr << "[Series] Use rank table in file-based iteration encoding "
-                     "at your own risk. Make sure to have an iteration open "
-                     "before calling this."
-                  << std::endl;
+        std::cerr
+            << "[Series] Use rank table in file-based iteration encoding "
+               "at your own risk. Make sure to have the first iteration open "
+               "before calling this."
+            << std::endl;
         if (iterations.empty())
         {
             return {};
@@ -355,6 +356,18 @@ chunk_assignment::RankMeta Series::rankTable([[maybe_unused]] bool collective)
         IOHandler()->enqueue(IOTask(this, openFile));
 #endif
     }
+    Attributable &attributable =
+        iterationEncoding() == IterationEncoding::fileBased
+        /*
+         * Only second class support for file encoding. We indiscriminately use
+         * the first Iteration for this operation. It is on the user to ensure
+         * that this Iteration is actually open. The warning printed above
+         * informs about this.
+         */
+        ? iterations.begin()
+              ->second.get()
+              .m_perIterationData.m_rankTableAttributable
+        : series.m_perIterationData.m_rankTableAttributable;
     auto datasets = availableDatasets();
     if (std::find(datasets.begin(), datasets.end(), "rankTable") ==
         datasets.end())
@@ -364,7 +377,7 @@ chunk_assignment::RankMeta Series::rankTable([[maybe_unused]] bool collective)
     }
     Parameter<Operation::OPEN_DATASET> openDataset;
     openDataset.name = "rankTable";
-    IOHandler()->enqueue(IOTask(&rankTable.m_attributable, openDataset));
+    IOHandler()->enqueue(IOTask(&attributable, openDataset));
 
     IOHandler()->flush(internal::defaultFlushParams);
     if (openDataset.extent->size() != 2)
@@ -394,7 +407,7 @@ chunk_assignment::RankMeta Series::rankTable([[maybe_unused]] bool collective)
         new char[writerRanks * lineWidth],
         [](char const *ptr) { delete[] ptr; }};
 
-    auto doReadDataset = [&openDataset, this, &get, &rankTable]() {
+    auto doReadDataset = [&openDataset, this, &get, &attributable]() {
         Parameter<Operation::READ_DATASET> readDataset;
         // read the whole thing
         readDataset.offset.resize(2);
@@ -404,8 +417,8 @@ chunk_assignment::RankMeta Series::rankTable([[maybe_unused]] bool collective)
         readDataset.dtype = Datatype::CHAR;
         readDataset.data = get;
 
-        IOHandler()->enqueue(IOTask(&rankTable.m_attributable, readDataset));
-        IOHandler()->flush(internal::defaultFlushParams);
+        IOHandler()->enqueue(IOTask(&attributable, readDataset));
+        IOHandler()->flush(internal::publicFlush);
     };
 
 #if openPMD_HAVE_MPI
@@ -464,8 +477,12 @@ Series &Series::setRankTable(const std::string &myRankInfo)
     return *this;
 }
 
-void Series::flushRankTable()
+void Series::flushRankTable(FlushLevel l, Attributable &attributable)
 {
+    if (!flush_level::global_flushpoint(l))
+    {
+        return;
+    }
     auto &series = get();
     auto &rankTable = series.m_rankTable;
     auto maybeMyRankInfo = std::visit(
@@ -508,8 +525,8 @@ void Series::flushRankTable()
     int rank{0}, size{1};
     unsigned long long maxSize = mySize;
 
-    auto createRankTable = [&size, &maxSize, &rankTable, this]() {
-        if (rankTable.m_attributable.written())
+    auto createRankTable = [&size, &maxSize, this, &attributable]() {
+        if (attributable.written())
         {
             return;
         }
@@ -518,19 +535,17 @@ void Series::flushRankTable()
         param.name = "rankTable";
         param.dtype = Datatype::CHAR;
         param.extent = {uint64_t(size), uint64_t(maxSize)};
-        IOHandler()->enqueue(
-            IOTask(&rankTable.m_attributable, std::move(param)));
+        IOHandler()->enqueue(IOTask(&attributable, std::move(param)));
     };
 
-    auto writeDataset = [&rank, &maxSize, this, &rankTable](
+    auto writeDataset = [&rank, &maxSize, this, &attributable](
                             std::shared_ptr<char> put, size_t num_lines = 1) {
         Parameter<Operation::WRITE_DATASET> chunk;
         chunk.dtype = Datatype::CHAR;
         chunk.offset = {uint64_t(rank), 0};
         chunk.extent = {num_lines, maxSize};
         chunk.data = std::move(put);
-        IOHandler()->enqueue(
-            IOTask(&rankTable.m_attributable, std::move(chunk)));
+        IOHandler()->enqueue(IOTask(&attributable, std::move(chunk)));
     };
 
 #if openPMD_HAVE_MPI
@@ -574,8 +589,7 @@ void Series::flushRankTable()
 
         // Must ensure that the Writable is consistently set to written on all
         // ranks
-        series.m_rankTable.m_attributable.setWritten(
-            true, EnqueueAsynchronously::OnlyAsync);
+        attributable.setWritten(true, EnqueueAsynchronously::OnlyAsync);
         return;
     }
 #endif
@@ -981,7 +995,8 @@ void Series::init(
                 std::make_unique<DummyIOHandler>(parsed_directory, at));
         auto &series = get();
         series.iterations.linkHierarchy(writable());
-        series.m_rankTable.m_attributable.linkHierarchy(writable());
+        series.m_perIterationData.m_rankTableAttributable.linkHierarchy(
+            writable());
         series.m_deferred_initialization =
             [called_this_already = false,
              filepath,
@@ -1207,7 +1222,7 @@ void Series::initSeries(
 
     series.iterations.linkHierarchy(writable);
     series.iterations.writable().ownKeyWithinParent = "data";
-    series.m_rankTable.m_attributable.linkHierarchy(writable);
+    series.m_perIterationData.m_rankTableAttributable.linkHierarchy(writable);
 
     series.m_name = input->name;
 
@@ -1494,6 +1509,13 @@ void Series::flushFileBased(
     case Access::APPEND_RANDOM_ACCESS:
     case Access::APPEND_LINEAR: {
         bool allDirty = dirty();
+        // In flush level SkeletonOnly, we might need to set some attributes
+        // (especially: particlesPath, meshesPath), but cannot flush them yet
+        // (as writing attributes is only permissible at higher flush levels).
+        // This flag records if the Series stayed or  became dirty during this
+        // flush. If yes, we set the Series back to dirty at the end of
+        // flushing.
+        bool skeletonFlushDirty = false;
         for (auto it = begin; it != end; ++it)
         {
             // Phase 1
@@ -1541,13 +1563,29 @@ void Series::flushFileBased(
                 IOHandler()->enqueue(IOTask(&it->second, std::move(fClose)));
                 it->second.get().m_closed = internal::CloseStatus::Closed;
             }
+            if (flushParams.flushLevel == FlushLevel::SkeletonOnly)
+            {
+                if (allDirty && !dirty())
+                {
+                    throw error::Internal(
+                        "Flush mode SkeletonOnly must not unset dirty flags.");
+                }
+                skeletonFlushDirty |= dirty();
+            }
+
             /* reset the dirty bit for every iteration (i.e. file)
-             * otherwise only the first iteration will have updates attributes
+             * otherwise only the first iteration will have updated attributes
              */
             setDirty(allDirty);
         }
-        setDirty(false);
-
+        if (flushParams.flushLevel == FlushLevel::SkeletonOnly)
+        {
+            setDirty(skeletonFlushDirty);
+        }
+        else
+        {
+            determineUnsetDirty(flushParams.flushLevel);
+        }
         // Phase 3
         if (flushIOHandler)
         {
@@ -1632,8 +1670,13 @@ void Series::flushGorVBased(
             Parameter<Operation::CREATE_FILE> fCreate;
             fCreate.name = series.m_name;
             IOHandler()->enqueue(IOTask(this, fCreate));
+        }
 
-            flushRankTable();
+        if (!series.m_perIterationData.m_rankTableAttributable.written())
+        {
+            flushRankTable(
+                flushParams.flushLevel,
+                series.m_perIterationData.m_rankTableAttributable);
         }
 
         series.iterations.flush(
@@ -1686,26 +1729,6 @@ void Series::flushGorVBased(
             IOHandler()->flush(flushParams);
         }
     }
-}
-
-void Series::flushMeshesPath()
-{
-    Parameter<Operation::WRITE_ATT> aWrite;
-    aWrite.name = "meshesPath";
-    Attribute a = getAttribute("meshesPath");
-    aWrite.m_resource = a.getAny();
-    aWrite.dtype = a.dtype;
-    IOHandler()->enqueue(IOTask(this, aWrite));
-}
-
-void Series::flushParticlesPath()
-{
-    Parameter<Operation::WRITE_ATT> aWrite;
-    aWrite.name = "particlesPath";
-    Attribute a = getAttribute("particlesPath");
-    aWrite.m_resource = a.getAny();
-    aWrite.dtype = a.dtype;
-    IOHandler()->enqueue(IOTask(this, aWrite));
 }
 
 void Series::readFileBased(
@@ -2700,7 +2723,7 @@ AdvanceStatus Series::advance(
 
     if (mode == AdvanceMode::ENDSTEP)
     {
-        flushStep(/* doFlush = */ false);
+        flushStep(/* doFlush = */ false, FlushLevel::UserFlush);
     }
 
     Parameter<Operation::ADVANCE> param;
@@ -2806,7 +2829,7 @@ AdvanceStatus Series::advance(AdvanceMode mode)
 
     if (mode == AdvanceMode::ENDSTEP)
     {
-        flushStep(/* doFlush = */ false);
+        flushStep(/* doFlush = */ false, FlushLevel::UserFlush);
     }
 
     Parameter<Operation::ADVANCE> param;
@@ -2829,8 +2852,12 @@ AdvanceStatus Series::advance(AdvanceMode mode)
     return *param.status;
 }
 
-void Series::flushStep(bool doFlush)
+void Series::flushStep(bool doFlush, FlushLevel l)
 {
+    if (!flush_level::write_datasets(l))
+    {
+        return;
+    }
     auto &series = get();
     if (!series.m_currentlyActiveIterations.empty() &&
         access::write(IOHandler()->m_frontendAccess))
@@ -3334,7 +3361,7 @@ namespace internal
              */
             if (impl.iterationEncoding() != IterationEncoding::fileBased)
             {
-                impl.flushStep(/* doFlush = */ true);
+                impl.flushStep(/* doFlush = */ true, FlushLevel::UserFlush);
             }
         }
         // Not strictly necessary, but clear the map of iterations

@@ -90,6 +90,7 @@ RecordComponent::storeChunk(Offset o, Extent e, F &&createBuffer)
     {
         size *= ext;
     }
+
     /*
      * Flushing the skeleton does not create datasets,
      * so we might need to do it now.
@@ -121,7 +122,7 @@ RecordComponent::storeChunk(Offset o, Extent e, F &&createBuffer)
         // restriction
         // TODO: Add some form of collective ::commitDefinitions() call to
         // RecordComponents to be called by users before the Span API
-        if (!written())
+        if (!writable().parent || !writable().parent->written)
         {
             /*
              * The openPMD backend might not yet know about this dataset.
@@ -129,7 +130,10 @@ RecordComponent::storeChunk(Offset o, Extent e, F &&createBuffer)
              * actual data yet.
              */
             seriesFlush_impl</* flush_entire_series = */ false>(
-                {FlushLevel::SkeletonOnly});
+                {FlushLevel::SkeletonOnly}, /*flush_io_handler=*/false);
+        }
+        if (!this->written())
+        {
             Parameter<Operation::CREATE_DATASET> dCreate(rc.m_dataset.value());
             dCreate.name = Attributable::get().m_writable.ownKeyWithinParent;
             IOHandler()->enqueue(IOTask(this, dCreate));
